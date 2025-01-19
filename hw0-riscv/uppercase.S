@@ -15,7 +15,23 @@ _start:
         la a0, input_string
 
         # Your code here!
-        
+
+capitalism:
+        lb t0, 0(a0)
+        beqz t0, end_program
+        li t1, 97
+        li t2, 122
+        blt t0, t1, nextChar
+        bgt t0, t2, nextChar
+        li t3, 32
+        sub t0, t0, t3
+        sb t0, 0()
+
+nextChar:
+        addi a0, a0, 1
+        j capitalism
+
+
 end_program:
         # jump here when you're done
         j end_program
