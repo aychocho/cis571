@@ -25,7 +25,7 @@ capitalism:
         bgt t0, t2, nextChar
         li t3, 32
         sub t0, t0, t3
-        sb t0, 0()
+        sb t0, 0(a0)
 
 nextChar:
         addi a0, a0, 1
