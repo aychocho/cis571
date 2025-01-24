@@ -14,12 +14,13 @@ module divider_unsigned (
 );
 
     // TODO: your code here
-	wire [31:0] dividendPartial;
-	wire [31:0] quotientPartial;
-	wire [31:0] remainderPartial;
+	wire [31:0] dividendPartial [32:0];
+	wire [31:0] quotientPartial [32:0];
+	wire [31:0] remainderPartial [32:0];
 	assign remainderPartial[0] = 32'h0000_0000;
 	assign quotientPartial[0] = 32'h0000_0000;
 	assign dividendPartial[0] = i_dividend;
+    genvar i;
 	generate
 		for (i=0; i < 32; i = i+1) begin: iter
 			divu_1iter thisOne(
@@ -62,7 +63,7 @@ module divu_1iter (
 
     // TODO: your code here
 
-    wire[31:0] shifted = (i_remainder << 1) | (i_dividend[31] & 1'b1);
+    wire[31:0] shifted = (i_remainder << 1) | ((i_dividend >> 31) & 32'h0000_0001);
     wire [0:0] isLess = shifted < i_divisor;
     assign o_remainder = isLess ? shifted : (shifted - i_divisor);
     assign o_quotient = isLess ? (i_quotient << 1) : ((i_quotient << 1) | 32'h0000_0001);
