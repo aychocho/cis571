@@ -1,10 +1,6 @@
-/* INSERT NAME AND PENNKEY HERE 
-* Alexander Cho (aycho)
-* */
+/* SARAH ALSAYED PENNKEY:SALSAYED */
 
 `timescale 1ns / 1ns
-
-// quotient = dividend / divisor
 
 module divider_unsigned (
     input  wire [31:0] i_dividend,
@@ -14,28 +10,31 @@ module divider_unsigned (
 );
 
     // TODO: your code here
-	wire [31:0] dividendPartial [32:0];
-	wire [31:0] quotientPartial [32:0];
-	wire [31:0] remainderPartial [32:0];
-	assign remainderPartial[0] = 32'h0000_0000;
-	assign quotientPartial[0] = 32'h0000_0000;
-	assign dividendPartial[0] = i_dividend;
-    genvar i;
-	generate
-		for (i=0; i < 32; i = i+1) begin: iter
-			divu_1iter thisOne(
-                .i_dividend (dividendPartial[i]),
-                .i_divisor (i_divisor),
-                .i_remainder (remainderPartial[i]),
-                .i_quotient (quotientPartial[i]),
-                .o_dividend (dividendPartial[i+1]),
-                .o_remainder (remainderPartial[i+1]),
-                .o_quotient (quotientPartial[i+1])    
-            );
-        end
-    endgenerate
-    assign o_remainder = remainderPartial[32];
-    assign o_quotient = quotientPartial[32];
+	wire [31:0] rem [32:0] ;
+	wire [31:0] q [32:0];
+	wire [31:0] k [32:0];
+	
+	assign rem[0] = 32'h0000_0000;
+	assign q[0] = 32'h0000_0000;
+	assign k[0] = i_dividend;
+	
+	genvar i ;
+	generate 
+		for(i = 0;i<32;i=i+1) begin : iter
+			divu_1iter du(
+				.i_dividend (k[i]), 
+				.i_divisor (i_divisor), 
+				.i_remainder (rem[i]), 
+				.i_quotient (q[i]), 
+				.o_dividend (k[i+1]), 
+				.o_remainder (rem[i+1]), 
+				.o_quotient (q[i+1])
+				);
+		end 
+	endgenerate
+	assign o_remainder = rem[32] ;
+	assign o_quotient = q[32]; 
+	
 endmodule
 
 
@@ -62,11 +61,20 @@ module divu_1iter (
     */
 
     // TODO: your code here
-
-    wire[31:0] shifted = (i_remainder << 1) | ((i_dividend >> 31) & 32'h0000_0001);
-    wire [0:0] isLess = shifted < i_divisor;
-    assign o_remainder = isLess ? shifted : (shifted - i_divisor);
-    assign o_quotient = isLess ? (i_quotient << 1) : ((i_quotient << 1) | 32'h0000_0001);
-    assign o_dividend = i_dividend << 1;
+	wire [31:0] rem2,q0,q1;
+	wire [32:0] rem3; 
+	wire [0:0] lt ;
+	
+	assign rem2 = {i_remainder[30:0],i_dividend[31]}; //implement shift using rewiring instead of shifter to reduce area and delay 
+	assign rem3 = rem2 - i_divisor ; //if result is negative then rem2< i_divisor. the number being negative or positive depends on the msb of rem3 given it has 33 bits.
+	assign lt = rem3[32] ; // instead of using a comparator block repeatedly which increases delay and area the msb of the subtraction as subtraction is used anyways.
+	assign q0 = {i_quotient[30:0],1'b0};
+	assign q1 = {i_quotient[30:0],1'b1};
+	assign o_quotient = (lt)? q0: q1;
+	assign o_remainder = (lt)? rem2: rem3[31:0]; 
+	assign o_dividend = {i_dividend[30:0],1'b0};
+	
 
 endmodule
+
+
