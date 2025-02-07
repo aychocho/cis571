@@ -21,6 +21,25 @@ module RegFile (
     input logic we,
     input logic rst
 );
+  // TODO: your code here
+
+  localparam int NumRegs = 32;
+  logic [`REG_SIZE] regs[NumRegs];
+  assign regs[0] = 32'b0;
+  wire [31:0] write_register;
+  decoder5_32 dec(.in(rd),.out(write_register));
+  wire [30:0] we_32 = {31{we}};
+  wire [30:0] w_enable = we_32&write_register[31:1];
+  int i;
+  always_ff @(posedge clk or posedge rst) begin
+	for(i = 1;i<32;i=i+1) begin
+		if(rst) regs[i-1] <= `RESET;
+		else if (w_enable[i-1] ) regs[i]<= rd_data;
+		end
+	end
+  assign rs1_data = regs[rs1];
+  assign rs2_data = regs[rs2];
+);
   localparam int NumRegs = 32;
   logic [`REG_SIZE] regs[NumRegs];
 
