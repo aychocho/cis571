@@ -213,7 +213,21 @@ module DatapathSingleCycle (
   // TODO: you will need to edit the port connections, however.
   wire [`REG_SIZE] rs1_data;
   wire [`REG_SIZE] rs2_data;
-  RegFile rf (.clk(clk), .rst(rst), .we(1'b0), .rd(0), .rd_data(0), .rs1(0), .rs2(0), .rs1_data(rs1_data), .rs2_data(rs2_data));
+
+  //for now I'll handle the regfile stuff here
+  logic[0:0] regwe;
+  logic[`REG_SIZE] dataReg;
+
+  RegFile rf (
+    .clk(clk),
+    .rst(rst),
+    .we(regwe),
+    .rd(insn_rd),
+    .rd_data(dataReg),
+    .rs1(insn_rs1),
+    .rs2(insn_rs2),
+    .rs1_data(rs1_data),
+    .rs2_data(rs2_data));
 
   logic illegal_insn;
 
@@ -251,40 +265,54 @@ module DatapathSingleCycle (
 
           3'b010: begin
             // logic for slti
+            dataReg = ($signed(data_rs1) < $signed(imm_i_sext)) ? 1:0;
           end
 
           3'b011: begin
             // logic for sltiu
+            dataReg = ((data_rs1) < (imm_i_sext)) ? 1:0;
           end
 
           3'b100: begin
             // logic for xori
+            dataReg = data_rs1 ^ imm_i_sext;
           end
 
           3'b110: begin
             // logic for ori
+            dataReg = data_rs1 | imm_i_sext;
           end
 
           3'b111: begin
             // logic for andi
+            dataReg = data_rs1 & imm_i_sext;
           end
 
           3'b001: begin
             // logic for slli
+            dataReg = data_rs1 << imm_shamt;
           end
 
           3'b101: begin
             // srli/srai case
             if (insn_from_imem[31:25] == 7'd0) begin
-              // TODO: logic for srli
+              // logic for srli
+              dataReg = data_rs1 >> imm_shamt;
             end else begin
-              // TODO: logic for srai
+              // logic for srai
+              datareg = $signed(data_rs1) >>> imm_shamt;
             end
+          end
+          //illegal case
+          default: begin
+            regwe = 1'b0;
+            illegal_insn = 1'b1;
           end
         endcase
       end
       OpRegReg: begin
         // TODO: do stuff that takes all regs, same as above
+        //TODO: DONT FORGET ABT MULS!!! Need to add ifs
         regwe = 1'b1;
         // case on fun3
         case (insn_from_imem[14:12])
@@ -298,36 +326,45 @@ module DatapathSingleCycle (
           end
 
           3'b001: begin
+            //TODO: THIS IS THE SAME FOR MULH
             // logic for sll
+            dataReg = data_rs1 << (data_rs2[4:0]);
           end
 
           3'b010: begin
             // logic for slt
+            dataReg = $signed(data_rs1) < $signed(data_rs2) ? 1:0;
           end
 
           3'b011: begin
             // logic for sltu
+            dataReg = data_rs1 < data_rs2 ? 1:0;
           end
 
           3'b100: begin
             // logic for xor
+            dataReg = data_rs1 ^ data_rs2;
           end
 
           3'b101: begin
             // srl/sra case
             if (insn_from_imem[31:25] == 7'd0) begin
-              // TODO: logic for srl
+              // logic for srl
+              dataReg = data_rs1 >> data_rs2[4:0];
             end else begin
-              // TODO: logic for sra
+              // logic for sra
+              dataReg = data_rs1 >>> data_rs2[4:0];
             end
           end
 
           3'b110: begin
             // logic for or
+            dataReg = data_rs1 | data_rs2;
           end
 
           3'b111: begin
             // logic for and
+            dataReg = data_rs1 & data_rs2;
           end
         endcase
       end
