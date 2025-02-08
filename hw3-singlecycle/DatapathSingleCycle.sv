@@ -366,6 +366,11 @@ module DatapathSingleCycle (
             // logic for and
             dataReg = data_rs1 & data_rs2;
           end
+
+          default: begin
+            regwe = 1'b0;
+            illegal_insn = 1'b1;
+          end
         endcase
       end
       default: begin
