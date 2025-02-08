@@ -39,7 +39,6 @@ module RegFile (
 	end
   assign rs1_data = regs[rs1];
   assign rs2_data = regs[rs2];
-);
   localparam int NumRegs = 32;
   logic [`REG_SIZE] regs[NumRegs];
 
@@ -88,6 +87,11 @@ module DatapathSingleCycle (
   // J - unconditional jumps
   wire [20:0] imm_j;
   assign {imm_j[20], imm_j[10:1], imm_j[11], imm_j[19:12], imm_j[0]} = {insn_from_imem[31:12], 1'b0};
+
+  //I ADDED STUFF HERE
+  // U - u type instructions! Didn't exist before so lets put that here
+  wire [19:0] imm_u;
+  assign imm_u = insn_from_imem[31:12];
 
   wire [`REG_SIZE] imm_i_sext = {{20{imm_i[11]}}, imm_i[11:0]};
   wire [`REG_SIZE] imm_s_sext = {{20{imm_s[11]}}, imm_s[11:0]};
@@ -215,15 +219,123 @@ module DatapathSingleCycle (
 
   always_comb begin
     illegal_insn = 1'b0;
-
+    //write enable bit, need to declare elsewhere
+    regwe = 1'b0;
+    //data reg, need to implement elsewhere
+    dataReg = 1'b0;
     case (insn_opcode)
       OpLui: begin
         // TODO: start here by implementing lui
+        // is there a 20 bit immediate? Not sure abt that, added it above for safety's sake
+        // imm_u should be u type immediate
+        //set write enable
+        regwe = 1'b1;
+        //send immu plus zeros to data
+        dataReg = {{imm_u[19:0]}, 12'b0};
+      end
+      OpAuipc: begin
+        //TODO: implement auipc, will need 20 bit immediate imm_u
+        //set write enable
+        regwe = 1'b1;
+        //set dataReg
+        dataReg = pcCurrent + {{imm_u[19:0]}, 12'b0};
+      end
+      OpRegImm: begin
+        // TODO: do stuff that takes regs and an immediate, probably math log and shifts
+        regwe = 1'b1;
+        // case on fun3
+        case (insn_from_imem[14:12])
+          3'b000: begin
+            // logic for addi
+          end
+
+          3'b010: begin
+            // logic for slti
+          end
+
+          3'b011: begin
+            // logic for sltiu
+          end
+
+          3'b100: begin
+            // logic for xori
+          end
+
+          3'b110: begin
+            // logic for ori
+          end
+
+          3'b111: begin
+            // logic for andi
+          end
+
+          3'b001: begin
+            // logic for slli
+          end
+
+          3'b101: begin
+            // srli/srai case
+            if (insn_from_imem[31:25] == 7'd0) begin
+              // TODO: logic for srli
+            end else begin
+              // TODO: logic for srai
+            end
+          end
+        endcase
+      end
+      OpRegReg: begin
+        // TODO: do stuff that takes all regs, same as above
+        regwe = 1'b1;
+        // case on fun3
+        case (insn_from_imem[14:12])
+          3'b000: begin
+            // add/sub case
+            if (insn_from_imem[31:25] == 7'd0) begin
+              // TODO: logic for add
+            end else begin
+              // TODO: logic for sub
+            end
+          end
+
+          3'b001: begin
+            // logic for sll
+          end
+
+          3'b010: begin
+            // logic for slt
+          end
+
+          3'b011: begin
+            // logic for sltu
+          end
+
+          3'b100: begin
+            // logic for xor
+          end
+
+          3'b101: begin
+            // srl/sra case
+            if (insn_from_imem[31:25] == 7'd0) begin
+              // TODO: logic for srl
+            end else begin
+              // TODO: logic for sra
+            end
+          end
+
+          3'b110: begin
+            // logic for or
+          end
+
+          3'b111: begin
+            // logic for and
+          end
+        endcase
       end
       default: begin
         illegal_insn = 1'b1;
       end
     endcase
+    
   end
 
 endmodule
