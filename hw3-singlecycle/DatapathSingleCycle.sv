@@ -200,6 +200,7 @@ module DatapathSingleCycle (
 
   // NOTE: don't rename your RegFile instance as the tests expect it to be `rf`
   // TODO: you will need to edit the port connections, however.
+<<<<<<< HEAD
   logic [`REG_SIZE] rs1_data;
   logic [`REG_SIZE] rs2_data;
   logic[`REG_SIZE] dataReg;
@@ -240,6 +241,20 @@ module DatapathSingleCycle (
 
   logic branchTime; //are we branching?
   logic [`REG_SIZE] branchTo; //target addy
+=======
+  wire [`REG_SIZE] rs1_data;
+  wire [`REG_SIZE] rs2_data;
+  RegFile rf (
+    .clk(clk),
+    .rst(rst),
+    .we(1'b0),
+    .rd(0),
+    .rd_data(0),
+    .rs1(0),
+    .rs2(0),
+    .rs1_data(rs1_data),
+    .rs2_data(rs2_data));
+>>>>>>> upstream/main
 
   logic illegal_insn;
 

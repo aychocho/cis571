@@ -3,7 +3,7 @@ VERILOG_SYNTH_SOURCE=system/System.v
 
 TOP_MODULE_RESOURCE_CHECK=SystemResourceCheck
 TOP_MODULE_DEMO=SystemDemo
-CONSTRAINTS=system/board.lpf
+CONSTRAINTS=../common/constraints/ulx3s.lpf
 
 ZIP_SOURCES=DatapathSingleCycle.sv ../hw2a-divider/divider_unsigned.sv ../hw2b-cla/cla.sv fpga_build/resource-report.json
 ZIP_FILE=single.zip
@@ -18,7 +18,7 @@ CLOCK_GEN_NAME=MyClockGen
 CLOCK_GEN_FILE=$(CLOCK_GEN_NAME).v
 
 # run ecppll to set clocks
-clock-gen:
+clock-gen: Makefile
 	mkdir -p $(BACKEND_OUTPUT_DIR)
 	ecppll --internal_feedback --clkin_name input_clk_25MHz --clkin 25 --clkout0_name clk_proc --clkout0 $(CLOCK_FREQUENCY) --clkout1_name clk_mem --clkout1 $(CLOCK_FREQUENCY) --phase1 90 -n $(CLOCK_GEN_NAME) -f .tmp-clk-gen.v > $(BACKEND_OUTPUT_DIR)/clock_generation_report.txt
 	@echo 'check that clocks have the requested frequency'
@@ -31,3 +31,8 @@ clock-gen:
 	@echo '`timescale 1ns / 1ns' >> $(CLOCK_GEN_FILE)
 	@echo '' >> $(CLOCK_GEN_FILE)
 	@cat .tmp-clk-gen.v >> $(CLOCK_GEN_FILE)
+
+# compile demo code and extract into mem_initial_contents.hex
+demo-code:
+	cd ledrop && cargo build --release
+	python3 make-mem-contents.py
