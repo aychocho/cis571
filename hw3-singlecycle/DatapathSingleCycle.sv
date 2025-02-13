@@ -27,16 +27,15 @@ module RegFile (
   assign rs1_data = regs[rs1];
   assign rs2_data = regs[rs2];
 
-  always_ff @(posedge clk or posedge rst) begin
+  always_ff @(posedge clk) begin
     if (rst) begin
       integer i;
-      for(i = 0; i< NumRegs; i= i+1) begin
+      for (i = 0; i < NumRegs; i = i + 1) begin
         regs[i] <= `RESET;
       end
-    end
-    else if (we && (rd != 5'd0)) begin
+    end else if (we && (rd != 5'd0)) begin
       regs[rd] <= rd_data;
-	  end
+    end
   end
 endmodule
 
@@ -200,7 +199,6 @@ module DatapathSingleCycle (
 
   // NOTE: don't rename your RegFile instance as the tests expect it to be `rf`
   // TODO: you will need to edit the port connections, however.
-<<<<<<< HEAD
   logic [`REG_SIZE] rs1_data;
   logic [`REG_SIZE] rs2_data;
   logic[`REG_SIZE] dataReg;
@@ -241,20 +239,6 @@ module DatapathSingleCycle (
 
   logic branchTime; //are we branching?
   logic [`REG_SIZE] branchTo; //target addy
-=======
-  wire [`REG_SIZE] rs1_data;
-  wire [`REG_SIZE] rs2_data;
-  RegFile rf (
-    .clk(clk),
-    .rst(rst),
-    .we(1'b0),
-    .rd(0),
-    .rd_data(0),
-    .rs1(0),
-    .rs2(0),
-    .rs1_data(rs1_data),
-    .rs2_data(rs2_data));
->>>>>>> upstream/main
 
   logic illegal_insn;
 
