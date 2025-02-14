@@ -258,6 +258,7 @@ module DatapathSingleCycle (
     rs1 = insn_rs1;
     rs2 = insn_rs2;
     halt = 0;
+    pcNext = pcCurrent + 4;
 
     case (insn_opcode)
       OpLui: begin
@@ -425,6 +426,9 @@ module DatapathSingleCycle (
       end
     endcase
     
+    if (branchTime) begin
+      pcNext = branchTo; // change pc to branch target
+    end
   end
 
 endmodule
