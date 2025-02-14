@@ -343,7 +343,7 @@ module DatapathSingleCycle (
           // TODO: logic for sub
           a = rs1_data;
           b = ~rs2_data;
-          cin = 1'b0;
+          cin = 1'b1;
           dataReg = sum;
         end
         else if (insn_sll) begin
@@ -368,7 +368,7 @@ module DatapathSingleCycle (
         end 
         else if (insn_sra) begin
           // logic for sra
-          dataReg = rs1_data >>> rs2_data[4:0];
+          dataReg = $signed(rs1_data) >>> rs2_data[4:0];
         end
         else if (insn_or) begin
           // logic for or
