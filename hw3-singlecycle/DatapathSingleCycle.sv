@@ -257,7 +257,7 @@ module DatapathSingleCycle (
     rd = insn_rd;
     rs1 = insn_rs1;
     rs2 = insn_rs2;
-    
+    halt = 0;
 
     case (insn_opcode)
       OpLui: begin
@@ -273,132 +273,152 @@ module DatapathSingleCycle (
         // TODO: do stuff that takes regs and an immediate, probably math log and shifts
         regwe = 1'b1;
         // case on fun3
-        case (insn_from_imem[14:12])
-          3'b000: begin
-            // logic for addi
-            a = rs1_data;
-            b = imm_i_sext;
-            cin = 1'b0;
-            dataReg = sum;
-          end
+        if (insn_addi) begin
+          // logic for addi
+          a = rs1_data;
+          b = imm_i_sext;
+          cin = 1'b0;
+          dataReg = sum;
+        end
 
-          3'b010: begin
-            // logic for slti
-            dataReg = ($signed(rs1_data) < $signed(imm_i_sext)) ? 1:0;
-          end
+        else if (insn_slti) begin
+          // logic for slti
+          dataReg = ($signed(rs1_data) < $signed(imm_i_sext)) ? 1:0;
+        end
 
-          3'b011: begin
-            // logic for sltiu
-            dataReg = ((rs1_data) < (imm_i_sext)) ? 1:0;
-          end
+        else if (insn_sltiu) begin
+          // logic for sltiu
+          dataReg = ((rs1_data) < (imm_i_sext)) ? 1:0;
+        end
 
-          3'b100: begin
-            // logic for xori
-            dataReg = rs1_data ^ imm_i_sext;
-          end
+        else if (insn_xori) begin
+          // logic for xori
+          dataReg = rs1_data ^ imm_i_sext;
+        end
 
-          3'b110: begin
-            // logic for ori
-            dataReg = rs1_data | imm_i_sext;
-          end
+        else if (insn_ori) begin
+          // logic for ori
+          dataReg = rs1_data | imm_i_sext;
+        end
 
-          3'b111: begin
-            // logic for andi
-            dataReg = rs1_data & imm_i_sext;
-          end
+        else if (insn_andi) begin
+          // logic for andi
+          dataReg = rs1_data & imm_i_sext;
+        end
 
-          3'b001: begin
-            // logic for slli
-            dataReg = rs1_data << imm_shamt;
-          end
+        else if (insn_slli) begin
+          // logic for slli
+          dataReg = rs1_data << imm_i[4:0];
+        end
 
-          3'b101: begin
-            // srli/srai case
-            if (insn_from_imem[31:25] == 7'd0) begin
-              // logic for srli
-              dataReg = rs1_data >> imm_shamt;
-            end else begin
-              // logic for srai
-              dataReg = $signed(rs1_data) >>> imm_shamt;
-            end
-          end
-          //illegal case
-          default: begin
+        else if (insn_srli) begin
+          dataReg = rs1_data >> imm_i[4:0];
+        end
+
+        else if (insn_srai) begin
+          // logic for srai
+          dataReg = $signed(rs1_data) >>> imm_i[4:0];
+        end
+        else //illegal case
+          begin
             regwe = 1'b0;
             illegal_insn = 1'b1;
           end
-        endcase
       end
       OpRegReg: begin
         // TODO: do stuff that takes all regs, same as above
         //TODO: DONT FORGET ABT MULS!!! Need to add ifs
         regwe = 1'b1;
         // case on fun3
-        case (insn_from_imem[14:12])
-          3'b000: begin
-            // add/sub case
-            if (insn_from_imem[31:25] == 7'd0) begin
-              // TODO: logic for add
-              a = rs1_data;
-              b = rs2_data;
-              cin = 1'b0;
-              dataReg = sum;
-            end else begin
-              // TODO: logic for sub
-              a = rs1_data;
-              b = ~rs2_data;
-              cin = 1'b0;
-              dataReg = sum;
+        if (insn_add) begin
+          // add/sub case
+          // TODO: logic for add
+          a = rs1_data;
+          b = rs2_data;
+          cin = 1'b0;
+          dataReg = sum;
+        end
+        else if (insn_sub) begin
+          // TODO: logic for sub
+          a = rs1_data;
+          b = ~rs2_data;
+          cin = 1'b0;
+          dataReg = sum;
+        end
+        else if (insn_sll) begin
+          //TODO: THIS IS THE SAME FOR MULH
+          // logic for sll
+          dataReg = rs1_data << (rs2_data[4:0]);
+        end
+        else if (insn_slt) begin
+          // logic for slt
+          dataReg = $signed(rs1_data) < $signed(rs2_data) ? 32'd1:32'd0;
+        end
+        else if (insn_sltu) begin
+          // logic for sltu
+          dataReg = rs1_data < rs2_data ? 32'd1:32'd0;
+        end
+        else if (insn_xor) begin
+          // logic for xor
+          dataReg = rs1_data ^ rs2_data;
+        end
+        else if (insn_srl) begin
+          dataReg = rs1_data >> rs2_data[4:0];
+        end 
+        else if (insn_sra) begin
+          // logic for sra
+          dataReg = rs1_data >>> rs2_data[4:0];
+        end
+        else if (insn_or) begin
+          // logic for or
+          dataReg = rs1_data | rs2_data;
+        end
+        else if (insn_and) begin
+          // logic for and
+          dataReg = rs1_data & rs2_data;
+        end
+        else begin
+          regwe = 1'b0;
+          illegal_insn = 1'b1;
+        end
+      end
+      OpBranch: begin // Branch operations
+          if (insn_beq) begin
+            if (rs1_data == rs2_data) begin
+            branchTime = 1'b1; // Set branch condition true if registers are equal
+            branchTo = pcCurrent + imm_b_sext; // Calculate branch target
             end
-          end
-
-          3'b001: begin
-            //TODO: THIS IS THE SAME FOR MULH
-            // logic for sll
-            dataReg = rs1_data << (rs2_data[4:0]);
-          end
-
-          3'b010: begin
-            // logic for slt
-            dataReg = $signed(rs1_data) < $signed(rs2_data) ? 1:0;
-          end
-
-          3'b011: begin
-            // logic for sltu
-            dataReg = rs1_data < rs2_data ? 1:0;
-          end
-
-          3'b100: begin
-            // logic for xor
-            dataReg = rs1_data ^ rs2_data;
-          end
-
-          3'b101: begin
-            // srl/sra case
-            if (insn_from_imem[31:25] == 7'd0) begin
-              // logic for srl
-              dataReg = rs1_data >> rs2_data[4:0];
-            end else begin
-              // logic for sra
-              dataReg = rs1_data >>> rs2_data[4:0];
+          end else if (insn_bne) begin
+            if (rs1_data != rs2_data) begin
+            branchTime = 1'b1; // Set branch condition true if registers are not equal
+            branchTo = pcCurrent + imm_b_sext; // Calculate branch target
             end
+          end else if (insn_blt) begin
+            if ($signed(rs1_data) < $signed(rs2_data)) begin
+            branchTime = 1'b1; // Set branch condition true if rs1 < rs2
+            branchTo = pcCurrent + imm_b_sext; // Calculate branch target
+            end
+          end else if (insn_bge) begin
+            if ($signed(rs1_data) >= $signed(rs2_data)) begin
+            branchTime = 1'b1; // Set branch condition true if rs1 >= rs2
+            branchTo = pcCurrent + imm_b_sext; // Calculate branch target
+            end
+          end else if (insn_bltu) begin
+            if (rs1_data < rs2_data) begin
+            branchTime = 1'b1; // Set branch condition true if rs1 < rs2 (unsigned)
+            branchTo = pcCurrent + imm_b_sext; // Calculate branch target
+            end
+          end else if (insn_bgeu) begin
+            if (rs1_data >= rs2_data) begin
+            branchTime = 1'b1; // Set branch condition true if rs1 >= rs2 (unsigned)
+            branchTo = pcCurrent + imm_b_sext; // Calculate branch target
+            end
+          end 
+      end
+      OpEnviron: begin  // ECALL and EBREAK
+          if (insn_ecall) begin
+            halt = 1'b1; 
           end
-
-          3'b110: begin
-            // logic for or
-            dataReg = rs1_data | rs2_data;
-          end
-
-          3'b111: begin
-            // logic for and
-            dataReg = rs1_data & rs2_data;
-          end
-
-          default: begin
-            regwe = 1'b0;
-            illegal_insn = 1'b1;
-          end
-        endcase
       end
       default: begin
         illegal_insn = 1'b1;
