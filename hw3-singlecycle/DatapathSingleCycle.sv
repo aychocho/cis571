@@ -2,12 +2,31 @@
 
 // registers are 32 bits in RV32
 `define REG_SIZE 31:0
-
+`define RESET 32'd0
 // RV opcodes are 7 bits
 `define OPCODE_SIZE 6:0
+`define REG_DIM 32
 
 `include "../hw2a-divider/divider_unsigned.sv"
 `include "../hw2b-cla/cla.sv"
+
+module divider_signed(
+	input  wire [`REG_SIZE] i_dividend,
+    input  wire [`REG_SIZE] i_divisor,
+    output wire [`REG_SIZE] o_remainder,
+    output wire [`REG_SIZE] o_quotient
+	);
+	wire N = i_dividend[`REG_DIM-1] ^ i_divisor[`REG_DIM-1];
+	wire [`REG_SIZE] i_dividend_mag = (i_dividend[`REG_DIM-1]==1'b1) ? (~i_dividend)+32'b1 : i_dividend;
+	wire [`REG_SIZE] i_divisor_mag = (i_divisor[`REG_DIM-1]==1'b1) ? (~i_divisor)+32'b1 : i_divisor;
+	
+	wire [`REG_SIZE] rem,q ;
+	divider_unsigned div_mag(.i_dividend(i_dividend_mag),.i_divisor(i_divisor_mag),.o_remainder(rem),.o_quotient(q));
+	assign o_remainder = (i_dividend[`REG_DIM-1]) ?( (~rem) + 32'b1): rem;
+	wire[`REG_SIZE] quot = (N) ? ( (~q) + 32'b1) : q;
+	assign o_quotient = (i_divisor==0) ? 32'hffff_ffff:quot ;
+endmodule
+
 
 module RegFile (
     input logic [4:0] rd,
@@ -21,29 +40,22 @@ module RegFile (
     input logic we,
     input logic rst
 );
-  // TODO: your code here
-
   localparam int NumRegs = 32;
   logic [`REG_SIZE] regs[NumRegs];
-  assign regs[0] = 32'b0;
-  wire [31:0] write_register;
-  decoder5_32 dec(.in(rd),.out(write_register));
-  wire [30:0] we_32 = {31{we}};
-  wire [30:0] w_enable = we_32&write_register[31:1];
-  int i;
-  always_ff @(posedge clk or posedge rst) begin
-	for(i = 1;i<32;i=i+1) begin
-		if(rst) regs[i-1] <= `RESET;
-		else if (w_enable[i-1] ) regs[i]<= rd_data;
-		end
-	end
+  //grab data from rs1 and rs2
   assign rs1_data = regs[rs1];
   assign rs2_data = regs[rs2];
-  localparam int NumRegs = 32;
-  logic [`REG_SIZE] regs[NumRegs];
 
-  // TODO: your code here
-
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      integer i;
+      for (i = 0; i < NumRegs; i = i + 1) begin
+        regs[i] <= `RESET;
+      end
+    end else if (we && (rd != 5'd0)) begin
+      regs[rd] <= rd_data;
+    end
+  end
 endmodule
 
 module DatapathSingleCycle (
@@ -53,10 +65,10 @@ module DatapathSingleCycle (
     output logic [`REG_SIZE] pc_to_imem,
     input wire [`REG_SIZE] insn_from_imem,
     // addr_to_dmem is a read-write port
-    output wire [`REG_SIZE] addr_to_dmem,
+    output logic [`REG_SIZE] addr_to_dmem,
     input logic [`REG_SIZE] load_data_from_dmem,
-    output wire [`REG_SIZE] store_data_to_dmem,
-    output wire [3:0] store_we_to_dmem
+    output logic [`REG_SIZE] store_data_to_dmem,
+    output logic [3:0] store_we_to_dmem
 );
 
   // components of the instruction
@@ -87,11 +99,6 @@ module DatapathSingleCycle (
   // J - unconditional jumps
   wire [20:0] imm_j;
   assign {imm_j[20], imm_j[10:1], imm_j[11], imm_j[19:12], imm_j[0]} = {insn_from_imem[31:12], 1'b0};
-
-  //I ADDED STUFF HERE
-  // U - u type instructions! Didn't exist before so lets put that here
-  wire [19:0] imm_u;
-  assign imm_u = insn_from_imem[31:12];
 
   wire [`REG_SIZE] imm_i_sext = {{20{imm_i[11]}}, imm_i[11:0]};
   wire [`REG_SIZE] imm_s_sext = {{20{imm_s[11]}}, imm_s[11:0]};
@@ -211,32 +218,96 @@ module DatapathSingleCycle (
 
   // NOTE: don't rename your RegFile instance as the tests expect it to be `rf`
   // TODO: you will need to edit the port connections, however.
-  wire [`REG_SIZE] rs1_data;
-  wire [`REG_SIZE] rs2_data;
-
-  //for now I'll handle the regfile stuff here
-  logic[0:0] regwe;
+  logic [`REG_SIZE] rs1_data;
+  logic [`REG_SIZE] rs2_data;
   logic[`REG_SIZE] dataReg;
+  logic[4:0] rd;
+  logic[4:0] rs1;
+  logic[4:0] rs2;
+  //write enable
+  logic regwe;
+
 
   RegFile rf (
     .clk(clk),
     .rst(rst),
     .we(regwe),
-    .rd(insn_rd),
+    .rd(rd),
     .rd_data(dataReg),
-    .rs1(insn_rs1),
-    .rs2(insn_rs2),
+    .rs1(rs1),
+    .rs2(rs2),
     .rs1_data(rs1_data),
-    .rs2_data(rs2_data));
+    .rs2_data(rs2_data)
+  );
+
+  cla mathematatics(
+    .a(a),
+    .b(b),
+    .cin(cin),
+    .sum(sum)
+  );
+	logic [`REG_SIZE] remu_res;
+	logic [`REG_SIZE] quotient_res;
+	logic [`REG_SIZE] dividend, divisor;
+	logic [`REG_SIZE] dividend_s, divisor_s;
+	logic [`REG_SIZE] rem_res,div_res;
+	
+	divider_unsigned divu(.i_dividend(dividend), .i_divisor(divisor), .o_remainder(remu_res), .o_quotient(quotient_res)); 
+	divider_signed div_inst(.i_dividend(dividend), .i_divisor(divisor), .o_remainder(rem_res), .o_quotient(div_res));
+  
+	
+	
+	logic [63:0] rsd1,rsd2;
+
+
+  logic [`REG_SIZE] sum;
+  logic [`REG_SIZE] a;
+  logic [`REG_SIZE] b;
+  logic cin;
+
+
+
+  logic branchTime; //are we branching?
+  logic [`REG_SIZE] branchTo; //target addy
 
   logic illegal_insn;
+  logic [`REG_SIZE] mem_addr;
+  logic [1:0] mem_off;
+  logic[63:0] mulhu_res, mulh_res;
+  logic[63:0] mulhsu_res;
 
   always_comb begin
     illegal_insn = 1'b0;
     //write enable bit, need to declare elsewhere
     regwe = 1'b0;
     //data reg, need to implement elsewhere
-    dataReg = 1'b0;
+    dataReg = 32'd0;
+    //default no branch
+    branchTime = 1'b0;
+    branchTo = 32'd0;
+    a = 0;
+	rsd1 = 64'b1;
+	rsd2 = 64'b1;
+    b = 0;
+    cin = 0;
+	
+	divisor = 32'b1;
+	dividend = 32'b1;
+	divisor_s = 32'b1;
+	dividend_s = 32'b1;
+    rd = insn_rd;
+    rs1 = insn_rs1;
+    rs2 = insn_rs2;
+    halt = 0;
+    pcNext = pcCurrent + 4;
+	addr_to_dmem = 4;
+	mem_off = 0;
+	mem_addr = 0;
+	store_we_to_dmem = 0;
+	store_data_to_dmem = 0;
+	mulhu_res = rs1_data*rs2_data;
+	mulh_res = $signed(rs1_data)*$signed(rs2_data);
+	mulhsu_res = $signed(rs1_data)*$signed({{1'b0},rs2_data});
     case (insn_opcode)
       OpLui: begin
         // TODO: start here by implementing lui
@@ -245,139 +316,329 @@ module DatapathSingleCycle (
         //set write enable
         regwe = 1'b1;
         //send immu plus zeros to data
-        dataReg = {{imm_u[19:0]}, 12'b0};
+        dataReg = {insn_from_imem[31:12], 12'b0};
       end
-      OpAuipc: begin
-        //TODO: implement auipc, will need 20 bit immediate imm_u
-        //set write enable
-        regwe = 1'b1;
-        //set dataReg
-        dataReg = pcCurrent + {{imm_u[19:0]}, 12'b0};
-      end
+	  OpAuipc: begin
+		if(insn_auipc) begin
+			regwe = 1'b1;
+			dataReg = pcCurrent + (insn_from_imem[31:12]<<12) ;
+		end
+	  end
+	  OpJalr: begin
+		if(insn_jalr) begin
+			regwe = 1'b1;
+			dataReg = pcCurrent + 4;
+			pcNext = (rs1_data+imm_i_sext) & ~(32'h1);
+		end
+	  end
       OpRegImm: begin
         // TODO: do stuff that takes regs and an immediate, probably math log and shifts
         regwe = 1'b1;
         // case on fun3
-        case (insn_from_imem[14:12])
-          3'b000: begin
-            // logic for addi
-          end
+        if (insn_addi) begin
+          // logic for addi
+          a = rs1_data;
+          b = imm_i_sext;
+          cin = 1'b0;
+          dataReg = sum;
+        end
 
-          3'b010: begin
-            // logic for slti
-            dataReg = ($signed(data_rs1) < $signed(imm_i_sext)) ? 1:0;
-          end
+        else if (insn_slti) begin
+          // logic for slti
+          dataReg = ($signed(rs1_data) < $signed(imm_i_sext)) ? 1:0;
+        end
 
-          3'b011: begin
-            // logic for sltiu
-            dataReg = ((data_rs1) < (imm_i_sext)) ? 1:0;
-          end
+        else if (insn_sltiu) begin
+          // logic for sltiu
+          dataReg = ((rs1_data) < (imm_i_sext)) ? 1:0;
+        end
 
-          3'b100: begin
-            // logic for xori
-            dataReg = data_rs1 ^ imm_i_sext;
-          end
+        else if (insn_xori) begin
+          // logic for xori
+          dataReg = rs1_data ^ imm_i_sext;
+        end
 
-          3'b110: begin
-            // logic for ori
-            dataReg = data_rs1 | imm_i_sext;
-          end
+        else if (insn_ori) begin
+          // logic for ori
+          dataReg = rs1_data | imm_i_sext;
+        end
 
-          3'b111: begin
-            // logic for andi
-            dataReg = data_rs1 & imm_i_sext;
-          end
+        else if (insn_andi) begin
+          // logic for andi
+          dataReg = rs1_data & imm_i_sext;
+        end
 
-          3'b001: begin
-            // logic for slli
-            dataReg = data_rs1 << imm_shamt;
-          end
+        else if (insn_slli) begin
+          // logic for slli
+          dataReg = rs1_data << imm_i[4:0];
+        end
 
-          3'b101: begin
-            // srli/srai case
-            if (insn_from_imem[31:25] == 7'd0) begin
-              // logic for srli
-              dataReg = data_rs1 >> imm_shamt;
-            end else begin
-              // logic for srai
-              datareg = $signed(data_rs1) >>> imm_shamt;
-            end
-          end
-          //illegal case
-          default: begin
+        else if (insn_srli) begin
+          dataReg = rs1_data >> imm_i[4:0];
+        end
+
+        else if (insn_srai) begin
+          // logic for srai
+          dataReg = $signed(rs1_data) >>> imm_i[4:0];
+        end
+        else //illegal case
+          begin
             regwe = 1'b0;
             illegal_insn = 1'b1;
           end
-        endcase
       end
       OpRegReg: begin
         // TODO: do stuff that takes all regs, same as above
         //TODO: DONT FORGET ABT MULS!!! Need to add ifs
         regwe = 1'b1;
         // case on fun3
-        case (insn_from_imem[14:12])
-          3'b000: begin
-            // add/sub case
-            if (insn_from_imem[31:25] == 7'd0) begin
-              // TODO: logic for add
-            end else begin
-              // TODO: logic for sub
+        if (insn_add) begin
+          // add/sub case
+          // TODO: logic for add
+          a = rs1_data;
+          b = rs2_data;
+          cin = 1'b0;
+          dataReg = sum;
+        end
+        else if (insn_sub) begin
+          // TODO: logic for sub
+          a = rs1_data;
+          b = ~rs2_data;
+          cin = 1'b1;
+          dataReg = sum;
+        end
+        else if (insn_sll) begin
+          //TODO: THIS IS THE SAME FOR MULH
+          // logic for sll
+          dataReg = rs1_data << (rs2_data[4:0]);
+        end
+        else if (insn_slt) begin
+          // logic for slt
+          dataReg = $signed(rs1_data) < $signed(rs2_data) ? 32'd1:32'd0;
+        end
+        else if (insn_sltu) begin
+          // logic for sltu
+          dataReg = rs1_data < rs2_data ? 32'd1:32'd0;
+        end
+        else if (insn_xor) begin
+          // logic for xor
+          dataReg = rs1_data ^ rs2_data;
+        end
+        else if (insn_srl) begin
+          dataReg = rs1_data >> rs2_data[4:0];
+        end 
+        else if (insn_sra) begin
+          // logic for sra
+          dataReg = $signed(rs1_data) >>> rs2_data[4:0];
+        end
+        else if (insn_or) begin
+          // logic for or
+          dataReg = rs1_data | rs2_data;
+        end
+        else if (insn_and) begin
+          // logic for and
+          dataReg = rs1_data & rs2_data;
+        end
+		else if(insn_mul) begin
+		dataReg = rs1_data * rs2_data;
+		end
+		else if(insn_divu) begin
+			dividend = rs1_data;
+			divisor = rs2_data;
+			dataReg = quotient_res;
+		end
+		else if(insn_remu) begin
+			dividend = rs1_data;
+			divisor = rs2_data;
+			dataReg = remu_res;
+		end
+		else if(insn_rem) begin
+			dividend = rs1_data;
+			divisor = rs2_data;
+			dataReg = rem_res;
+		end
+		else if(insn_div) begin
+			dividend = rs1_data;
+			divisor = rs2_data;
+			dataReg = div_res;
+		end
+		else if(insn_mulhu) begin
+			dataReg = mulhu_res[63:32];
+		end
+		else if(insn_mulh) begin
+			dataReg = mulh_res[63:32];
+		end
+		else if(insn_mulhsu) begin
+			dataReg = mulhsu_res[63:32];
+		end
+        else begin
+          regwe = 1'b0;
+          illegal_insn = 1'b1;
+        end
+      end
+	  OpLoad: begin
+		if(insn_lw) begin
+			if(((rs1_data + imm_i_sext)&(32'h0000_0003))==0) begin
+				regwe = 1'b1;
+				addr_to_dmem = rs1_data + imm_i_sext;
+				dataReg = load_data_from_dmem ; 
+			end
+			else begin
+				illegal_insn = 1'b1;
+			end
+		end
+		else if(insn_lb || insn_lbu) begin
+			regwe = 1'b1;
+			addr_to_dmem = (rs1_data + imm_i_sext)&(32'hffff_fffc);
+			mem_addr = rs1_data + imm_i_sext;
+			mem_off = mem_addr[1:0];
+			case (mem_off)
+				2'b00: dataReg = (insn_lb) ? {{24{load_data_from_dmem[7]}},load_data_from_dmem[7:0]} : {{24{1'b0}},load_data_from_dmem[7:0]};
+				2'b01: dataReg = (insn_lb) ?{{24{load_data_from_dmem[15]}},load_data_from_dmem[15:8]}: {{24{1'b0}},load_data_from_dmem[15:8]};
+				2'b10: dataReg = (insn_lb) ?{{24{load_data_from_dmem[23]}},load_data_from_dmem[23:16]}: {{24{1'b0}},load_data_from_dmem[23:16]};
+				2'b11: dataReg = (insn_lb) ?{{24{load_data_from_dmem[31]}},load_data_from_dmem[31:24]}: {{24{1'b0}},load_data_from_dmem[31:24]};
+			endcase 
+			
+		end
+		else if(insn_lh || insn_lhu) begin
+			regwe = 1'b1;
+			addr_to_dmem = (rs1_data + imm_i_sext)&(32'hffff_fffc);
+			mem_addr = rs1_data + imm_i_sext;
+			mem_off = mem_addr[1:0];
+			case (mem_off)
+				2'b00: dataReg = (insn_lh) ? {{16{load_data_from_dmem[15]}},load_data_from_dmem[15:0]} : {{16{1'b0}},load_data_from_dmem[15:0]};
+				2'b01: dataReg = (insn_lh) ? {{16{load_data_from_dmem[23]}},load_data_from_dmem[23:8]} : {{16{1'b0}},load_data_from_dmem[23:8]};
+				2'b10: dataReg = (insn_lh) ?{{16{load_data_from_dmem[31]}},load_data_from_dmem[31:16]}: {{16{1'b0}},load_data_from_dmem[31:16]};
+				2'b11: begin
+				regwe = 1'b0;
+				illegal_insn = 1'b1;
+				end
+			endcase 
+			
+		end
+		
+		else begin
+		  regwe = 1'b0;
+          illegal_insn = 1'b1;
+		end
+	  end
+	  OpStore: begin
+		if(insn_sw) begin
+			if(((rs1_data + imm_s_sext)&(32'h0000_0003))==0) begin
+				addr_to_dmem = rs1_data + imm_s_sext;
+				store_we_to_dmem = 4'hf;
+				store_data_to_dmem = rs2_data;
+			end
+			else begin
+				illegal_insn = 1'b1;
+			end
+		end
+		else if(insn_sh) begin
+			addr_to_dmem = (rs1_data + imm_s_sext)&(32'hffff_fffc);
+			mem_addr = rs1_data + imm_s_sext;
+			mem_off = mem_addr[1:0];
+			
+			case (mem_off)
+				2'b00: begin
+					store_we_to_dmem = 4'h3;
+					store_data_to_dmem = rs2_data;
+				end
+				2'b01: begin 
+					store_we_to_dmem = 4'h6;
+					store_data_to_dmem = {rs2_data[23:0],{8{1'b0}}};
+				end
+				2'b10: begin 
+					store_we_to_dmem = 4'hc;
+					store_data_to_dmem = {rs2_data[15:0],{16{1'b0}}};
+				end
+				2'b11: begin 
+					store_we_to_dmem = 4'h0;
+					store_data_to_dmem = 0;
+				end
+			endcase
+		end
+		else if(insn_sb) begin
+			addr_to_dmem = (rs1_data + imm_s_sext)&(32'hffff_fffc);
+			mem_addr = rs1_data + imm_s_sext;
+			mem_off = mem_addr[1:0];
+			
+			case (mem_off)
+				2'b00: begin
+					store_we_to_dmem = 4'h1;
+					store_data_to_dmem = rs2_data;
+				end
+				2'b01: begin 
+					store_we_to_dmem = 4'h2;
+					store_data_to_dmem = {rs2_data[23:0],{8{1'b0}}};
+				end
+				2'b10: begin 
+					store_we_to_dmem = 4'h4;
+					store_data_to_dmem = {rs2_data[15:0],{16{1'b0}}};
+				end
+				2'b11: begin 
+					store_we_to_dmem = 4'h8;
+					store_data_to_dmem = {rs2_data[7:0],{24{1'b0}}};
+				end
+			endcase
+				
+		end
+		else begin
+          illegal_insn = 1'b1;
+		end
+	  end
+      OpBranch: begin // Branch operations
+          if (insn_beq) begin
+            if (rs1_data == rs2_data) begin
+            branchTime = 1'b1; // Set branch condition true if registers are equal
+            branchTo = pcCurrent + imm_b_sext; // Calculate branch target
             end
-          end
-
-          3'b001: begin
-            //TODO: THIS IS THE SAME FOR MULH
-            // logic for sll
-            dataReg = data_rs1 << (data_rs2[4:0]);
-          end
-
-          3'b010: begin
-            // logic for slt
-            dataReg = $signed(data_rs1) < $signed(data_rs2) ? 1:0;
-          end
-
-          3'b011: begin
-            // logic for sltu
-            dataReg = data_rs1 < data_rs2 ? 1:0;
-          end
-
-          3'b100: begin
-            // logic for xor
-            dataReg = data_rs1 ^ data_rs2;
-          end
-
-          3'b101: begin
-            // srl/sra case
-            if (insn_from_imem[31:25] == 7'd0) begin
-              // logic for srl
-              dataReg = data_rs1 >> data_rs2[4:0];
-            end else begin
-              // logic for sra
-              dataReg = data_rs1 >>> data_rs2[4:0];
+          end else if (insn_bne) begin
+            if (rs1_data != rs2_data) begin
+            branchTime = 1'b1; // Set branch condition true if registers are not equal
+            branchTo = pcCurrent + imm_b_sext; // Calculate branch target
             end
+          end else if (insn_blt) begin
+            if ($signed(rs1_data) < $signed(rs2_data)) begin
+            branchTime = 1'b1; // Set branch condition true if rs1 < rs2
+            branchTo = pcCurrent + imm_b_sext; // Calculate branch target
+            end
+          end else if (insn_bge) begin
+            if ($signed(rs1_data) >= $signed(rs2_data)) begin
+            branchTime = 1'b1; // Set branch condition true if rs1 >= rs2
+            branchTo = pcCurrent + imm_b_sext; // Calculate branch target
+            end
+          end else if (insn_bltu) begin
+            if (rs1_data < rs2_data) begin
+            branchTime = 1'b1; // Set branch condition true if rs1 < rs2 (unsigned)
+            branchTo = pcCurrent + imm_b_sext; // Calculate branch target
+            end
+          end else if (insn_bgeu) begin
+            if (rs1_data >= rs2_data) begin
+            branchTime = 1'b1; // Set branch condition true if rs1 >= rs2 (unsigned)
+            branchTo = pcCurrent + imm_b_sext; // Calculate branch target
+            end
+          end 
+      end
+	  OpJal : begin
+		regwe = 1'b1;
+		if(insn_jal) begin
+			dataReg = pcCurrent + 4;
+			pcNext = pcCurrent+ imm_j_sext;
+		end
+	  end
+      OpEnviron: begin  // ECALL and EBREAK
+          if (insn_ecall) begin
+            halt = 1'b1; 
           end
-
-          3'b110: begin
-            // logic for or
-            dataReg = data_rs1 | data_rs2;
-          end
-
-          3'b111: begin
-            // logic for and
-            dataReg = data_rs1 & data_rs2;
-          end
-
-          default: begin
-            regwe = 1'b0;
-            illegal_insn = 1'b1;
-          end
-        endcase
       end
       default: begin
         illegal_insn = 1'b1;
       end
     endcase
     
+    if (branchTime) begin
+      pcNext = branchTo; // change pc to branch target
+    end
   end
 
 endmodule
@@ -417,9 +678,11 @@ module MemorySingleCycle #(
   // memory is arranged as an array of 4B words
   logic [`REG_SIZE] mem_array[NUM_WORDS];
 
+`ifdef SYNTHESIS
   initial begin
-    $readmemh("../mem_initial_contents.hex", mem_array, 0);
+    $readmemh("mem_initial_contents.hex", mem_array);
   end
+`endif
 
   always_comb begin
     // memory addresses should always be 4B-aligned
