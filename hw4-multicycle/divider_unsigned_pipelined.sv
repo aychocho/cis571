@@ -6,7 +6,7 @@
 `define REG_SIZE 31:0
 
 typedef struct packed{
-	logic [`REG_SIZE] divisor;
+    logic [`REG_SIZE] divisor;
     logic [`REG_SIZE] dividend;
     logic [`REG_SIZE] remainder;
     logic [`REG_SIZE] quotient;
