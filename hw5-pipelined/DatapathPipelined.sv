@@ -62,6 +62,18 @@ module RegFile (
 
   // TODO: your code here
 
+  //write to rd on clk up
+  always_ff @(posedge clk) begin
+    if (rst) begin
+      for (int i = 0; i < NumRegs; i++) begin
+        regs[i] <= '0;
+      end
+    end else begin
+      if (we && (rd != 0)) begin
+        regs[rd] <= rd_data;
+      end
+    end
+  end
 endmodule
 
 /** state at the start of Decode stage */
@@ -107,6 +119,67 @@ module DatapathPipelined (
   localparam bit [`OPCODE_SIZE] OpcodeAuipc = 7'b00_101_11;
   localparam bit [`OPCODE_SIZE] OpcodeLui = 7'b01_101_11;
 
+  //SETUP
+  
+  //instantiate regfile
+
+  logic [`REG_SIZE] rs1_data;
+  logic [`REG_SIZE] rs2_data;
+  logic[`REG_SIZE] dataReg;
+  logic[4:0] rd;
+  logic[4:0] rs1;
+  logic[4:0] rs2;
+  //write enable
+  logic regwe;
+
+  assign rs1= decode_state.insn[19:15];
+  assign rs2= decode_state.insn[24:20];
+
+  RegFile rf(
+    .rd(rd),
+    .rd_data(dataReg),
+    .rs1(rs1),
+    .rs1_data(rs1_data),
+    .rs2(rs2),
+    .rs2_data(rs2_data),
+    .clk(clk),
+    .we(regwe),
+    .rst(rst)
+  );
+
+  //cla
+
+  logic[`REG_SIZE] a;
+  logic[`REG_SIZE] b;
+  logic[`REG_SIZE] sum;
+  logic[`REG_SIZE] cin;
+
+  cla mathematatics(
+    .a(a),
+    .b(b),
+    .cin(cin),
+    .sum(sum)
+  );
+
+  //divider
+
+  logic [`REG_SIZE] remu_res;
+	logic [`REG_SIZE] quotient_res;
+	logic [`REG_SIZE] dividend, divisor;
+	logic [`REG_SIZE] dividend_s, divisor_s;
+	logic [`REG_SIZE] rem_res,div_res;
+	
+	wire stall = 1'b0;
+	DividerUnsignedPipelined div_inst(
+    .i_dividend(dividend),
+    .i_divisor(divisor),
+    .o_remainder(remu_res),
+    .o_quotient(quotient_res),
+    .clk(clk),
+    .rst(rst),
+    .stall(stall)
+  );
+  
   // cycle counter, not really part of any stage but useful for orienting within GtkWave
   // do not rename this as the testbench uses this value
   logic [`REG_SIZE] cycles_current;
@@ -140,6 +213,8 @@ module DatapathPipelined (
   // send PC to imem
   assign pc_to_imem = f_pc_current;
   assign f_insn = insn_from_imem;
+
+  //TODO: BRANCHING LOGIC
 
   // Here's how to disassemble an insn into a string you can view in GtkWave.
   // Use PREFIX to provide a 1-character tag to identify which stage the insn comes from.
@@ -184,6 +259,29 @@ module DatapathPipelined (
 
   // TODO: your code here, though you will also need to modify some of the code above
   // TODO: the testbench requires that your register file instance is named `rf`
+
+  //bypass
+  always_comb begin
+    thisRs1Data = rs1_data;
+    //forwarding
+    if (regwe == 1'b1 && rd == rs1 && rs1 != 5'd0) begin
+      thisRs1Data = Writeback_data.result;
+    end
+    thisRs2Data = rs2_data;
+    if (regwe == 1'b1 && rd == rs2 && rs2 != 5'd0) begin
+      thisRs2Data = Writeback_data.result;
+    end
+    //TODO: IF BRANCH
+    
+    //TODO: Essentially handle branches, and otherwise package up state in a packed struct
+
+  // EXECUTE[
+  
+
+  // MEMORY
+
+  // WRITEBACK
+
 
 endmodule
 
