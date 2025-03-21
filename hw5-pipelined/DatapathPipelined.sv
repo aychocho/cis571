@@ -199,6 +199,7 @@ module DatapathPipelined (
   logic [`REG_SIZE] thisFetchInstruction;
   wire [`REG_SIZE] f_insn;
   cycle_status_e f_cycle_status;
+  logic[`REG_SIZE] pcStep;
 
   // program counter
   always_ff @(posedge clk) begin
@@ -283,13 +284,27 @@ module DatapathPipelined (
     
     //TODO: Essentially handle branches, and otherwise package up state in a packed struct
 
+    if (pcStep !=4) begin
+      thisDecodeCycleStatus = CYCLE_TAKEN_BRANCH;
+      thisDecodeInstruction = 0;
+      nextDecodePc = 0;
+      thisRs1Data = 0;
+      thisRs2Data=0;
+    end else begin
+      thisDecodeCycleStatus = decode_state.cycle_status;
+      thisDecodeInstruction = decode_state.insn;
+      nextDecodePc = decode_state.pc;
+    end
+  end
+
   // EXECUTE
 
   //TODO: SET STAGE STATE PACKED
-  /*
+  stage_execute_t executeState;
+
   always_ff @(posedge clk) begin
     if (rst) begin
-      set pc to 0
+      executeState.pc = 0;
       set instruction to 0
       cycle status is reset
     end else begin
