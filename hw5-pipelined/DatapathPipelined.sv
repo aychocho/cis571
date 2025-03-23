@@ -184,13 +184,13 @@ module DatapathPipelined (
       f_cycle_status <= CYCLE_NO_STALL;
     end else begin
 	  f_cycle_status <= CYCLE_NO_STALL;
-      f_pc_current <= x_pc_next;
+      f_pc_current <= ((xd_lw_dep_stall)? f_pc_current:x_pc_next);
     end
   end
   // send PC to imem
   assign pc_to_imem = f_pc_current;
-  assign f_to_d_pc = (x_branchinTime) ? 32'b0 : f_pc_current;
-  assign f_insn = (x_branchinTime) ? `NOP: insn_from_imem;
+  assign f_to_d_pc = (x_branchinTime || x_jumpinTime) ? 32'b0 : f_pc_current;
+  assign f_insn = (x_branchinTime || x_jumpinTime) ? `NOP: insn_from_imem;
   
 
   // Here's how to disassemble an insn into a string you can view in GtkWave.
@@ -216,12 +216,20 @@ module DatapathPipelined (
         insn: 0,
         cycle_status: CYCLE_RESET
       };
+	end else if(xd_lw_dep_stall) begin
+      begin
+        decode_state <= '{
+          pc: d_pc_current,
+          insn: d_insn,
+          cycle_status: decode_state.cycle_status
+        };
+      end
     end else begin
       begin
         decode_state <= '{
           pc: f_to_d_pc,
           insn: f_insn,
-          cycle_status: ((x_branchinTime)? CYCLE_TAKEN_BRANCH : f_cycle_status)
+          cycle_status: ((x_branchinTime || x_jumpinTime)? CYCLE_TAKEN_BRANCH : f_cycle_status)
         };
       end
     end
@@ -236,9 +244,13 @@ module DatapathPipelined (
 
   // TODO: your code here, though you will also need to modify some of the code above
   // TODO: the testbench requires that your register file instance is named `rf`
-  wire [`REG_SIZE] d_pc_current = (x_branchinTime)? 32'b0: decode_state.pc;
-  wire [`REG_SIZE] d_insn = ((x_branchinTime) ? `NOP: decode_state.insn);
-  cycle_status_e d_cycle_status = ((x_branchinTime) ? CYCLE_TAKEN_BRANCH:decode_state.cycle_status);
+  wire [`REG_SIZE] d_pc_current = (x_branchinTime || x_jumpinTime)? 32'b0: decode_state.pc;
+  wire [`REG_SIZE] d_insn = ((x_branchinTime || x_jumpinTime) ? `NOP: decode_state.insn);
+  
+  wire [`OPCODE_SIZE] d_insn_opcode = decode_state.insn[6:0];
+  wire [`REG_SIZE] d_to_x_insn ;
+  
+  cycle_status_e d_cycle_status = ((x_branchinTime || x_jumpinTime) ? CYCLE_TAKEN_BRANCH:decode_state.cycle_status);
   wire [4:0] d_insn_rs1 = decode_state.insn[19:15];
   wire [4:0] d_insn_rs2 = decode_state.insn[24:20];
   wire [`REG_SIZE] d_rs1_data;
@@ -253,13 +265,20 @@ module DatapathPipelined (
     .clk(clk),
     .rst(rst),
     .we(w_regwe),
-    .rd(w_rd),
+    .rd( w_insn_rd),
     .rd_data(w_dataReg),
     .rs1(d_insn_rs1),
     .rs2(d_insn_rs2),
     .rs1_data(d_rs1_data_reg),
     .rs2_data(d_rs2_data_reg)
   );
+  
+  wire mx_rs1_load_dep = (d_insn_opcode == OpcodeRegReg)||(d_insn_opcode == OpcodeRegImm)||(d_insn_opcode == OpcodeStore)||(d_insn_opcode == OpcodeBranch);
+  wire mx_rs2_load_dep = (d_insn_opcode == OpcodeRegReg)||(d_insn_opcode == OpcodeBranch);
+  wire xd_load_dep = ( ( mx_rs1_load_dep && (x_insn_rd == d_insn_rs1) ) )||( ( mx_rs2_load_dep && (x_insn_rd == d_insn_rs2) ) ); 
+  wire xd_lw_dep_stall = (~x_branchinTime && ~x_jumpinTime)&&(|x_insn_rd )&&(x_insn_opcode == OpcodeLoad)&&xd_load_dep;
+  
+  assign d_to_x_insn = (xd_lw_dep_stall) ? `NOP: d_insn;
   
   wire wd_bypass_s1 = (w_insn_rd == d_insn_rs1 ) && (|w_insn_rd);
   wire wd_bypass_s2 = (w_insn_rd == d_insn_rs2 ) && (|w_insn_rd);
@@ -284,12 +303,22 @@ module DatapathPipelined (
 		reg_s2_data: 0
 		
       };
+	end else if(xd_lw_dep_stall) begin
+		begin
+		execute_state <= '{
+        pc:  0,
+        insn: d_to_x_insn,
+        cycle_status: CYCLE_LOAD2USE,
+		reg_s1_data: 0 ,
+		reg_s2_data: 0
+      };
+	  end 
     end else begin
       begin
         execute_state <= '{
           pc: d_pc_current,
           insn: d_insn ,
-          cycle_status: ((x_branchinTime)? CYCLE_TAKEN_BRANCH: decode_state.cycle_status),
+          cycle_status: ((x_branchinTime || x_jumpinTime)? CYCLE_TAKEN_BRANCH: decode_state.cycle_status),
 		  reg_s1_data: d_rs1_data,
 		  reg_s2_data: d_rs2_data
         };
@@ -423,6 +452,7 @@ module DatapathPipelined (
   
   logic x_illegal_insn;
   logic x_branchinTime;
+  logic x_jumpinTime;
   
   logic[63:0] x_mulhu_res, x_mulh_res;
   logic[63:0] x_mulhsu_res;
@@ -450,6 +480,7 @@ module DatapathPipelined (
 	x_pc_next = f_pc_current + 4;
 	x_branchTo = 32'd0;
 	x_branchinTime = 0;
+	x_jumpinTime = 0;
 	
 	case(x_insn_opcode)
         OpcodeLui: begin
@@ -577,7 +608,7 @@ module DatapathPipelined (
 					x_branchinTime = 1'b1;
 				end
 			end else if (x_insn_bltu) begin // Set branch condition true if rs1 < rs2
-				if ($signed({{x_rs1_data[31]},x_rs1_data}) < $signed({{1'b0},x_rs2_data})) begin
+				if (x_rs1_data < x_rs2_data) begin
 					x_branchTo = x_pc_current + x_imm_b_sext; // Calculate branch target
 					x_branchinTime = 1'b1;
 				end
@@ -595,15 +626,42 @@ module DatapathPipelined (
 				x_out = x_pc_current + (x_insn[31:12]<<12) ;
 			end
 		end
+		OpcodeJalr: begin
+			if(x_insn_jalr) begin
+				x_out = x_pc_current + 4;
+				x_pc_next = (x_rs1_data+ x_imm_i_sext) & ~(32'h1);
+				x_jumpinTime = 1'b1;
+			end
+		end
+		OpcodeJal : begin
+			if(x_insn_jal) begin
+				x_out = x_pc_current + 4;
+				x_pc_next = x_pc_current + x_imm_j_sext;
+				x_jumpinTime = 1'b1;
+			end
+		end
+		OpcodeLoad: begin
+			if(x_insn_lw||x_insn_lb || x_insn_lbu || x_insn_lh || x_insn_lhu) begin
+				x_out = x_rs1_data + x_imm_i_sext;
+			end	
+			else begin
+				x_illegal_insn = 1'b1;
+			end
+		end
 		default: begin
 		//:)
 			x_illegal_insn = 1'b1;
 		end
       endcase
-	  
 	  if (x_branchinTime) begin
 		x_pc_next = x_branchTo; // change pc to branch target
       end
+	  /*
+	  if(xd_lw_dep_stall) begin
+		x_pc_next = f_pc_current; 
+	  end
+	  */
+	  
   
   end
  
@@ -640,13 +698,73 @@ module DatapathPipelined (
   
   wire [`INSN_SIZE] m_insn = memory_state.insn;
   wire [`REG_SIZE] m_pc = memory_state.pc;
-  wire[4:0] m_insn_rd = m_insn[11:7];
+  
+  wire [`OPCODE_SIZE] m_insn_opcode = m_insn[6:0];
+  wire m_reg_write1 = (m_insn_opcode == OpcodeLoad) || (m_insn_opcode == OpcodeLui) || (m_insn_opcode == OpcodeRegImm) || (m_insn_opcode == OpcodeRegReg);
+  wire m_reg_write2 = m_reg_write1 || (m_insn_opcode == OpcodeAuipc) || (m_insn_opcode == OpcodeJal) || (m_insn_opcode == OpcodeJalr) ;
+  wire[4:0] m_insn_rd = (m_reg_write2) ? m_insn[11:7]:0;
+  //wire[4:0] m_insn_rd = m_insn[11:7] ;
+  
   cycle_status_e m_cycle_status = memory_state.cycle_status;
   wire [`REG_SIZE] m_reg_s2_data = memory_state.reg_s2_data;
   wire[`REG_SIZE] m_exe_out = memory_state.exe_out;
   
-  logic [`REG_SIZE] m_mem_data ;
   
+  wire m_insn_lb  = m_insn_opcode == OpcodeLoad && m_insn[14:12] == 3'b000;
+  wire m_insn_lh  = m_insn_opcode == OpcodeLoad && m_insn[14:12] == 3'b001;
+  wire m_insn_lw  = m_insn_opcode == OpcodeLoad && m_insn[14:12] == 3'b010;
+  wire m_insn_lbu = m_insn_opcode == OpcodeLoad && m_insn[14:12] == 3'b100;
+  wire m_insn_lhu = m_insn_opcode == OpcodeLoad && m_insn[14:12] == 3'b101;
+  
+  wire m_insn_sb = m_insn_opcode == OpcodeStore && m_insn[14:12] == 3'b000;
+  wire m_insn_sh = m_insn_opcode == OpcodeStore && m_insn[14:12] == 3'b001;
+  wire m_insn_sw = m_insn_opcode == OpcodeStore && m_insn[14:12] == 3'b010;
+	
+	logic m_illegal_insn;
+	logic [`REG_SIZE] m_mem_data ;
+	always_comb begin
+		m_illegal_insn = 1'b0;
+		addr_to_dmem = 4;
+		store_we_to_dmem = 0;
+		store_data_to_dmem = 0;
+		m_mem_data = 0;
+		case(m_insn_opcode)
+			OpcodeLoad: begin
+				if(m_insn_lw) begin
+					if(((m_exe_out)&(32'h0000_0003))==0) begin
+						addr_to_dmem = m_exe_out;
+						m_mem_data = load_data_from_dmem ; 
+					end
+				end
+				else if(m_insn_lb || m_insn_lbu) begin
+					addr_to_dmem = (m_exe_out)&(32'hffff_fffc);
+					case (m_exe_out[1:0])
+						2'b00: m_mem_data = (m_insn_lb) ? {{24{load_data_from_dmem[7]}},load_data_from_dmem[7:0]} : {{24{1'b0}},load_data_from_dmem[7:0]};
+						2'b01: m_mem_data = (m_insn_lb) ?{{24{load_data_from_dmem[15]}},load_data_from_dmem[15:8]}: {{24{1'b0}},load_data_from_dmem[15:8]};
+						2'b10: m_mem_data = (m_insn_lb) ?{{24{load_data_from_dmem[23]}},load_data_from_dmem[23:16]}: {{24{1'b0}},load_data_from_dmem[23:16]};
+						2'b11: m_mem_data = (m_insn_lb) ?{{24{load_data_from_dmem[31]}},load_data_from_dmem[31:24]}: {{24{1'b0}},load_data_from_dmem[31:24]};
+					endcase 
+				end
+				else if(m_insn_lh || m_insn_lhu) begin
+					addr_to_dmem = (m_exe_out)&(32'hffff_fffc);
+					case (m_exe_out[1:0])
+						2'b00: m_mem_data = (m_insn_lh) ? {{16{load_data_from_dmem[15]}},load_data_from_dmem[15:0]} : {{16{1'b0}},load_data_from_dmem[15:0]};
+						2'b01: m_mem_data = (m_insn_lh) ? {{16{load_data_from_dmem[23]}},load_data_from_dmem[23:8]} : {{16{1'b0}},load_data_from_dmem[23:8]};
+						2'b10: m_mem_data = (m_insn_lh) ?{{16{load_data_from_dmem[31]}},load_data_from_dmem[31:16]}: {{16{1'b0}},load_data_from_dmem[31:16]};
+						2'b11: begin
+							m_illegal_insn = 1'b1;
+						end
+					endcase 
+	            end
+				else begin
+					m_illegal_insn = 1'b0;
+				end
+			end
+			default: begin
+				m_illegal_insn = 1'b1;
+			end
+		endcase
+	end
   
   
    /****************/
@@ -683,21 +801,23 @@ module DatapathPipelined (
   
   //register write stuffs to be modified in writeback stage
   wire [`INSN_SIZE] w_insn = writeback_state.insn;
-  wire[4:0] w_insn_rd = w_insn[11:7];
+  wire [`OPCODE_SIZE] w_insn_opcode = w_insn[6:0];
+  wire w_reg_write1 = (w_insn_opcode == OpcodeLoad) || (w_insn_opcode == OpcodeLui) || (w_insn_opcode == OpcodeRegImm) || (w_insn_opcode == OpcodeRegReg);
+  wire w_reg_write2 = w_reg_write1 || (w_insn_opcode == OpcodeAuipc) || (w_insn_opcode == OpcodeJal) || (w_insn_opcode == OpcodeJalr) ;
+  wire[4:0] w_insn_rd = (w_reg_write2) ? w_insn[11:7]:0;
+  //wire[4:0] w_insn_rd = w_insn[11:7];
+  
   wire [`REG_SIZE] w_alu_out = writeback_state.exe_out;
   wire[`REG_SIZE] w_mem_out = writeback_state.mem_out;
   
   logic w_regwe;
-  wire[4:0] w_rd = w_insn[11:7]; 
   logic[`REG_SIZE] w_dataReg;
-  
-  wire[`OPCODE_SIZE] w_opcode = w_insn[6:0];
 
   always_comb begin
 	halt = 0;
 	w_regwe = 1'b0;
 	w_dataReg = 0;
-	case(w_opcode)
+	case( w_insn_opcode)
 		OpcodeAuipc: begin
 			w_regwe = 1'b1;
 			w_dataReg = w_alu_out;
