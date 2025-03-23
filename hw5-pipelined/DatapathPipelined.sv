@@ -189,8 +189,8 @@ module DatapathPipelined (
   end
   // send PC to imem
   assign pc_to_imem = f_pc_current;
-  assign f_to_d_pc = (x_branchinTime) ? 32'b0 : f_pc_current;
-  assign f_insn = (x_branchinTime) ? `NOP: insn_from_imem;
+  assign f_to_d_pc = (x_branchinTime_f) ? 32'b0 : f_pc_current;
+  assign f_insn = (x_branchinTime_f) ? `NOP: insn_from_imem;
   
 
   // Here's how to disassemble an insn into a string you can view in GtkWave.
@@ -221,7 +221,7 @@ module DatapathPipelined (
         decode_state <= '{
           pc: f_to_d_pc,
           insn: f_insn,
-          cycle_status: ((x_branchinTime)? CYCLE_TAKEN_BRANCH : f_cycle_status)
+          cycle_status: ((x_branchinTime_f)? CYCLE_TAKEN_BRANCH : f_cycle_status)
         };
       end
     end
@@ -236,9 +236,9 @@ module DatapathPipelined (
 
   // TODO: your code here, though you will also need to modify some of the code above
   // TODO: the testbench requires that your register file instance is named `rf`
-  wire [`REG_SIZE] d_pc_current = (x_branchinTime)? 32'b0: decode_state.pc;
-  wire [`REG_SIZE] d_insn = ((x_branchinTime) ? `NOP: decode_state.insn);
-  cycle_status_e d_cycle_status = ((x_branchinTime) ? CYCLE_TAKEN_BRANCH:decode_state.cycle_status);
+  wire [`REG_SIZE] d_pc_current = (x_branchinTime_d)? 32'b0: decode_state.pc;
+  wire [`REG_SIZE] d_insn = ((x_branchinTime_d) ? `NOP: decode_state.insn);
+  cycle_status_e d_cycle_status = ((x_branchinTime_d) ? CYCLE_TAKEN_BRANCH:decode_state.cycle_status);
   wire [4:0] d_insn_rs1 = decode_state.insn[19:15];
   wire [4:0] d_insn_rs2 = decode_state.insn[24:20];
   wire [`REG_SIZE] d_rs1_data;
@@ -289,7 +289,7 @@ module DatapathPipelined (
         execute_state <= '{
           pc: d_pc_current,
           insn: d_insn ,
-          cycle_status: ((x_branchinTime)? CYCLE_TAKEN_BRANCH: decode_state.cycle_status),
+          cycle_status: ((x_branchinTime_d)? CYCLE_TAKEN_BRANCH: decode_state.cycle_status),
 		  reg_s1_data: d_rs1_data,
 		  reg_s2_data: d_rs2_data
         };
@@ -422,7 +422,8 @@ module DatapathPipelined (
   );
   
   logic x_illegal_insn;
-  logic x_branchinTime;
+  logic x_branchinTime_d;
+  logic x_branchinTime_f;
   
   logic[63:0] x_mulhu_res, x_mulh_res;
   logic[63:0] x_mulhsu_res;
@@ -449,7 +450,8 @@ module DatapathPipelined (
 	
 	x_pc_next = f_pc_current + 4;
 	x_branchTo = 32'd0;
-	x_branchinTime = 0;
+	x_branchinTime_d = 0;
+	x_branchinTime_f = 0;
 	
 	case(x_insn_opcode)
         OpcodeLui: begin
@@ -559,32 +561,38 @@ module DatapathPipelined (
 			if (x_insn_beq) begin
 				if (x_rs1_data == x_rs2_data) begin // Set branch condition true if rs1 = rs2
 					x_branchTo = x_pc_current + x_imm_b_sext ; // Calculate branch target
-					x_branchinTime = (x_imm_b_sext != 4);
+					x_branchinTime_d = (x_imm_b_sext != 4);
+					x_branchinTime_f = (x_imm_b_sext != 8)&&(x_imm_b_sext != 4);
 				end
 			end else if (x_insn_bne) begin // Set branch condition true if rs1 != rs2
 				if (x_rs1_data != x_rs2_data) begin
 					x_branchTo = x_pc_current + x_imm_b_sext; // Calculate branch target
-					x_branchinTime = 1'b1;
+					x_branchinTime_d = (x_imm_b_sext != 4);
+					x_branchinTime_f = (x_imm_b_sext != 8)&&(x_imm_b_sext != 4);
 				end
             end else if (x_insn_blt) begin // Set branch condition true if signed rs1 < signed rs2
 				if ($signed(x_rs1_data) < $signed(x_rs2_data)) begin
 					x_branchTo = x_pc_current + x_imm_b_sext; // Calculate branch target
-					x_branchinTime = 1'b1;
+					x_branchinTime_d = (x_imm_b_sext != 4);
+					x_branchinTime_f = (x_imm_b_sext != 8)&&(x_imm_b_sext != 4);
 				end
 			end else if (x_insn_bge) begin // Set branch condition true if rs1 >= rs2
 				if ($signed(x_rs1_data) >= $signed(x_rs2_data)) begin
 					x_branchTo = x_pc_current + x_imm_b_sext; // Calculate branch target
-					x_branchinTime = 1'b1;
+					x_branchinTime_d = (x_imm_b_sext != 4);
+					x_branchinTime_f = (x_imm_b_sext != 8)&&(x_imm_b_sext != 4);
 				end
 			end else if (x_insn_bltu) begin // Set branch condition true if rs1 < rs2
 				if (x_rs1_data < x_rs2_data) begin
 					x_branchTo = x_pc_current + x_imm_b_sext; // Calculate branch target
-					x_branchinTime = 1'b1;
+					x_branchinTime_d = (x_imm_b_sext != 4);
+					x_branchinTime_f = (x_imm_b_sext != 8)&&(x_imm_b_sext != 4);
 				end
 			end else if (x_insn_bgeu) begin // Set branch condition true if rs1 >= rs2 (unsigned)
 				if (x_rs1_data >= x_rs2_data) begin
 					x_branchTo = x_pc_current + x_imm_b_sext; // Calculate branch target
-					x_branchinTime = 1'b1;
+					x_branchinTime_d = (x_imm_b_sext != 4);
+					x_branchinTime_f = (x_imm_b_sext != 8)&&(x_imm_b_sext != 4);
 				end
           end 
 		end
@@ -601,7 +609,7 @@ module DatapathPipelined (
 		end
       endcase
 	  
-	  if (x_branchinTime) begin
+	  if (x_branchinTime_d && x_branchinTime_f) begin
 		x_pc_next = x_branchTo; // change pc to branch target
       end
   
