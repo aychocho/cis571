@@ -192,7 +192,7 @@ module DatapathPipelined (
       f_cycle_status <= CYCLE_NO_STALL;
     end else begin
 	  f_cycle_status <= CYCLE_NO_STALL;
-      f_pc_current <= ((xd_lw_dep_stall)? f_pc_current:x_pc_next);
+      f_pc_current <= ((xd_lw_dep_stall || fence_stall)? f_pc_current:x_pc_next);
     end
   end
   // send PC to imem
@@ -224,7 +224,7 @@ module DatapathPipelined (
         insn: 0,
         cycle_status: CYCLE_RESET
       };
-	end else if(xd_lw_dep_stall) begin
+	end else if(xd_lw_dep_stall || fence_stall) begin
       begin
         decode_state <= '{
           pc: d_pc_current,
@@ -286,13 +286,16 @@ module DatapathPipelined (
     .rs1_data(d_rs1_data_reg),
     .rs2_data(d_rs2_data_reg)
   );
+  //fence stall 
+  wire fence_stall = (d_insn_opcode == OpcodeMiscMem) && (w_insn_opcode!=OpcodeStore);
   
+  //load use stall 
   wire mx_rs1_load_dep = (d_insn_opcode == OpcodeRegReg)||(d_insn_opcode == OpcodeRegImm)||(d_insn_opcode == OpcodeStore)||(d_insn_opcode == OpcodeBranch);
   wire mx_rs2_load_dep = (d_insn_opcode == OpcodeRegReg)||(d_insn_opcode == OpcodeBranch);
   wire xd_load_dep = ( ( mx_rs1_load_dep && (x_insn_rd == d_insn_rs1) ) )||( ( mx_rs2_load_dep && (x_insn_rd == d_insn_rs2) ) ); 
   wire xd_lw_dep_stall = (~x_branchinTime && ~x_jumpinTime)&&(|x_insn_rd )&&(x_insn_opcode == OpcodeLoad)&&xd_load_dep;
   
-  assign d_to_x_insn = (xd_lw_dep_stall) ? `NOP: d_insn;
+  assign d_to_x_insn = (xd_lw_dep_stall || fence_stall) ? `NOP: d_insn;
   
   wire wd_bypass_s1 = (w_insn_rd == d_insn_rs1 ) && (|w_insn_rd);
   wire wd_bypass_s2 = (w_insn_rd == d_insn_rs2 ) && (|w_insn_rd);
@@ -318,12 +321,12 @@ module DatapathPipelined (
 		rd: 0
 		
       };
-	end else if(xd_lw_dep_stall) begin
+	end else if(xd_lw_dep_stall || fence_stall) begin
 		begin
 		execute_state <= '{
         pc:  0,
         insn: d_to_x_insn,
-        cycle_status: CYCLE_LOAD2USE,
+        cycle_status: (fence_stall)? CYCLE_FENCEI: CYCLE_LOAD2USE,
 		reg_s1_data: 0 ,
 		reg_s2_data: 0,
 		rd: 0
@@ -434,9 +437,12 @@ module DatapathPipelined (
   wire [4:0] x_insn_rs1 = x_insn[19:15];
   wire [4:0] x_insn_rs2 = x_insn[24:20];
   
+  //MX bypass
+  
   wire mx_bypass_s1 = (m_insn_rd == x_insn_rs1)&&(|m_insn_rd) ;
   wire mx_bypass_s2 = (m_insn_rd == x_insn_rs2)&&(|m_insn_rd) ;
   
+  // WX bypass 
   wire wx_bypass_s1 = (w_insn_rd == x_insn_rs1)&&(|w_insn_rd) ;
   wire wx_bypass_s2 = (w_insn_rd == x_insn_rs2)&&(|w_insn_rd) ;
   
@@ -446,6 +452,7 @@ module DatapathPipelined (
   //priority is given to mx bypass as its the most recent.
   wire[`REG_SIZE] x_rs1_data = (mx_bypass_s1) ? m_exe_out : x_rs1_data_wx;
   wire[`REG_SIZE] x_rs2_data = (mx_bypass_s2) ? m_exe_out : x_rs2_data_wx;
+  
   cycle_status_e x_cycle_status = execute_state.cycle_status;
   
   wire [255:0] x_disasm;
@@ -503,6 +510,7 @@ module DatapathPipelined (
 	x_reg_write_en = 1'b0;
 	x_mem_or_alu = 2'b00;
 	x_mem_insn = 5'b0;
+	x_mem_addr = 32'h0;
 	
 	x_a = 0;
 	x_b = 0;
@@ -702,14 +710,35 @@ module DatapathPipelined (
 			x_reg_write_en = 1'b1;
 			x_mem_or_alu = 2'b11;
 			x_out = x_rs1_data + x_imm_i_sext;
+			x_mem_addr = x_rs1_data + x_imm_i_sext;
 			if(x_insn_lw) begin
-				x_mem_insn = 5'b00_101;
+				if(&(~x_mem_addr[1:0])) begin
+					x_mem_insn = 5'b00_101;
+				end 
+				else begin
+					x_reg_write_en = 1'b0;
+					x_mem_or_alu = 2'b00;
+					x_mem_insn = 5'b0;
+					x_out = 0;
+					x_illegal_insn = 1'b1;
+				end
 			end	
-			else if(x_insn_lhu) begin
-				x_mem_insn = 5'b00_100;
-			end
-			else if(x_insn_lh) begin
-				x_mem_insn = 5'b00_011;
+			else if(x_insn_lhu||x_insn_lh) begin
+				if(&(x_mem_addr[1:0])) begin
+					x_reg_write_en = 1'b0;
+					x_mem_or_alu = 2'b00;
+					x_out = 0;
+					x_mem_insn = 5'b0;
+					x_illegal_insn = 1'b1;
+				end
+				else begin
+					if(x_insn_lhu) begin
+						x_mem_insn = 5'b00_100;
+					end
+					else if(x_insn_lh) begin
+						x_mem_insn = 5'b00_011;
+					end
+				end
 			end
 			else if(x_insn_lbu) begin
 				x_mem_insn = 5'b00_010;
@@ -722,8 +751,34 @@ module DatapathPipelined (
 				x_mem_or_alu = 2'b0;
 				x_out = 0;
 				x_illegal_insn = 1'b1;
+				x_mem_insn = 5'b0;
 			end
 		end
+		OpcodeStore: begin
+			x_reg_write_en = 1'b0;
+			x_mem_or_alu = 2'b0;
+			x_out = x_rs1_data + x_imm_s_sext;
+			x_mem_addr = x_rs1_data + x_imm_s_sext;
+			if(x_insn_sw) begin
+				if(&(~x_mem_addr[1:0])) begin
+					x_mem_insn = 5'b11_000;
+				end
+				else begin
+					x_mem_insn = 5'b00_000;
+					x_illegal_insn = 1'b1;
+				end
+			end
+			else if(x_insn_sh) begin
+				x_mem_insn = 5'b10_000;
+			end
+			else if(x_insn_sb) begin
+				x_mem_insn = 5'b01_000;
+			end
+			else begin
+				x_mem_insn = 5'b00_000;
+				x_illegal_insn = 1'b1;
+			end
+	  end
 		default: begin
 		//:)
 			x_illegal_insn = 1'b1;
@@ -784,10 +839,14 @@ module DatapathPipelined (
   
   wire [`INSN_SIZE] m_insn = memory_state.insn;
   wire [`REG_SIZE] m_pc = memory_state.pc;
+  wire[4:0] m_insn_rs2 = m_insn[24:20];
   
   wire [4:0] m_mem_insn = memory_state.mem_insn;
   
   wire[4:0] m_insn_rd = memory_state.rd;
+  
+  
+  
   
   cycle_status_e m_cycle_status = memory_state.cycle_status;
   wire [`REG_SIZE] m_reg_s2_data = memory_state.reg_s2_data;
@@ -808,6 +867,12 @@ module DatapathPipelined (
   wire m_insn_sh = (~m_is_load) && (m_is_store) &&(m_mem_insn[4:3] == 2'b10);
   wire m_insn_sb = (~m_is_load) && (m_is_store) &&(m_mem_insn[4:3] == 2'b01);
   
+  //WM bypass:
+  
+  wire wm_bypass = (m_is_store) && (m_insn_rs2 == w_insn_rd) && (|w_insn_rd) ;  
+  
+  wire[`REG_SIZE] m_rs2_data = (wm_bypass)? w_dataReg: memory_state.reg_s2_data;
+  
 	
 	logic m_illegal_insn;
 	logic [`REG_SIZE] m_mem_data ;
@@ -819,13 +884,8 @@ module DatapathPipelined (
 		m_mem_data = 0;
 		if (m_is_load) begin
 			if(m_insn_lw) begin
-				if(((m_exe_out)&(32'h0000_0003))==0) begin
-					addr_to_dmem = m_exe_out;
-					m_mem_data = load_data_from_dmem ; 
-				end
-				else begin
-					m_illegal_insn = 1'b1;
-				end
+				addr_to_dmem = m_exe_out;
+				m_mem_data = load_data_from_dmem ; 
 			end
 			else if(m_insn_lb || m_insn_lbu) begin
 				addr_to_dmem = (m_exe_out)&(32'hffff_fffc);
@@ -850,6 +910,61 @@ module DatapathPipelined (
 			else begin
 				m_illegal_insn = 1'b1;
 			end
+		end
+		else if(m_is_store) begin
+			if(m_insn_sw) begin
+				addr_to_dmem = m_exe_out;
+				store_we_to_dmem = 4'hf;
+				store_data_to_dmem = m_rs2_data;
+			end
+			else if(m_insn_sh) begin
+				addr_to_dmem = (m_exe_out)&(32'hffff_fffc);
+				case (m_exe_out[1:0])
+					2'b00: begin
+						store_we_to_dmem = 4'h3;
+						store_data_to_dmem =m_rs2_data;
+					end
+					2'b01: begin 
+						store_we_to_dmem = 4'h6;
+						store_data_to_dmem = {m_rs2_data[23:0],{8{1'b0}}};
+					end
+					2'b10: begin 
+						store_we_to_dmem = 4'hc;
+						store_data_to_dmem = {m_rs2_data[15:0],{16{1'b0}}};
+					end
+					2'b11: begin 
+						store_we_to_dmem = 4'h0;
+						store_data_to_dmem = 0;
+					end
+				endcase
+			end
+			else if(m_insn_sb) begin
+				addr_to_dmem = (m_exe_out)&(32'hffff_fffc);
+				case (m_exe_out[1:0])
+					2'b00: begin
+						store_we_to_dmem = 4'h1;
+						store_data_to_dmem = m_rs2_data;
+					end
+					2'b01: begin 
+						store_we_to_dmem = 4'h2;
+						store_data_to_dmem = {m_rs2_data[23:0],{8{1'b0}}};
+					end
+					2'b10: begin 
+						store_we_to_dmem = 4'h4;
+						store_data_to_dmem = {m_rs2_data[15:0],{16{1'b0}}};
+					end
+					2'b11: begin 
+						store_we_to_dmem = 4'h8;
+						store_data_to_dmem = {m_rs2_data[7:0],{24{1'b0}}};
+					end
+				endcase	
+			end
+			else begin
+				m_illegal_insn = 1'b1;
+			end
+		end
+		else begin
+			m_illegal_insn = 1'b1;
 		end
 	end
   
@@ -892,6 +1007,7 @@ module DatapathPipelined (
   
   //register write stuffs to be modified in writeback stage
   wire [`INSN_SIZE] w_insn = writeback_state.insn;
+  wire [`OPCODE_SIZE] w_insn_opcode = w_insn[6:0];
   wire[4:0] w_insn_rd = writeback_state.rd;
   
   wire[1:0] w_mem_or_alu = writeback_state.mem_or_alu;
