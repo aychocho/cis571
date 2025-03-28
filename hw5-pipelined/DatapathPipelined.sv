@@ -612,6 +612,7 @@ module DatapathPipelined (
   
   wire [`OPCODE_SIZE] d_insn_opcode = decode_state.insn[6:0];
   
+  
   wire d_reg_write1 = (d_insn_opcode == OpcodeLoad) || (d_insn_opcode == OpcodeLui) || (d_insn_opcode == OpcodeRegImm) || (d_insn_opcode == OpcodeRegReg);
   wire d_reg_write2 = d_reg_write1 || (d_insn_opcode == OpcodeAuipc) || (d_insn_opcode == OpcodeJal) || (d_insn_opcode == OpcodeJalr) ;
   wire [4:0] d_reg_rd = (d_reg_write2)?decode_state.insn[11:7]:0;
@@ -652,7 +653,21 @@ module DatapathPipelined (
   wire fence_stall = (d_insn_opcode == OpcodeMiscMem) && (w_insn_opcode!=OpcodeStore);
   
   //load use stall 
-  wire mx_rs1_dep = (d_insn_opcode == OpcodeRegReg)||(d_insn_opcode == OpcodeRegImm)||(d_insn_opcode == OpcodeStore)||(d_insn_opcode == OpcodeBranch);
+  
+  /*
+  opcodes that need rs1 value at X stage
+   OpcodeLoad = 7'b00_000_11;
+  localparam bit [`OPCODE_SIZE] OpcodeStore = 7'b01_000_11; //need rs2 data at M stage
+  localparam bit [`OPCODE_SIZE] OpcodeBranch = 7'b11_000_11; //need rs2 data at X stage
+  
+
+  localparam bit [`OPCODE_SIZE] OpcodeRegImm = 7'b00_100_11;
+  localparam bit [`OPCODE_SIZE] OpcodeRegReg = 7'b01_100_11; //need rs2 data at X stage
+
+
+  */
+  
+  wire mx_rs1_dep = (d_insn_opcode == OpcodeRegReg)||(d_insn_opcode == OpcodeRegImm)||(d_insn_opcode == OpcodeStore)||(d_insn_opcode == OpcodeBranch) || (d_insn_opcode == OpcodeLoad);
   wire mx_rs2_dep = (d_insn_opcode == OpcodeRegReg)||(d_insn_opcode == OpcodeBranch);
   wire xd_load_dep = ( ( mx_rs1_dep && (x_insn_rd == d_insn_rs1) ) )||( ( mx_rs2_dep && (x_insn_rd == d_insn_rs2) ) ); 
   wire xd_lw_dep_stall = (~x_branchinTime && ~x_jumpinTime)&&(|x_insn_rd )&&(x_insn_opcode == OpcodeLoad)&&xd_load_dep;
