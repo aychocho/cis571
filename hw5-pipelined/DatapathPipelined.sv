@@ -94,8 +94,10 @@ typedef struct packed {
   logic div_stall;
   logic div_by_zero;
   logic [4:0] div_rd;
-  //logic [`INSN_SIZE] insn;
-  //cycle_status_e cycle_status;
+  logic [`REG_SIZE] pc;
+  logic [`INSN_SIZE] insn;
+  logic [`REG_SIZE] rs2_data;
+  cycle_status_e cycle_status;
 } divider_state;
 
 module division_states(
@@ -111,6 +113,10 @@ module division_states(
 	input logic i_div_stall,
 	input logic i_div_by_zero,
 	input logic [4:0] i_div_rd,
+	input logic [`INSN_SIZE] i_div_pc,
+	input logic [`INSN_SIZE] i_div_insn,
+	input logic [`REG_SIZE] i_div_rs2_data,
+	input cycle_status_e i_cycle_status,
 	//input logic i_div_insn,
 	
 	output logic o_ready,
@@ -123,7 +129,11 @@ module division_states(
 	output logic o_insn_divu,
 	output logic o_div_stall,
 	output logic o_div_by_zero,
-	output logic [4:0] o_div_rd
+	output logic [4:0] o_div_rd,
+	output logic [`INSN_SIZE] o_div_pc,
+	output logic [`INSN_SIZE] o_div_insn,
+	output cycle_status_e o_cycle_status,
+	output logic [`REG_SIZE] o_div_rs2_data
 	//output logic o_div_insn
 	);
 	
@@ -148,7 +158,12 @@ module division_states(
 				is_divu:0,
 				div_stall:0,
 				div_by_zero:0,
+				pc: 0,
+				insn: 0,
+				rs2_data:0,
+				cycle_status : CYCLE_RESET,
 				div_rd:0
+				
 				//insn: 0
 			};
 			
@@ -162,6 +177,10 @@ module division_states(
 				is_divu:0,
 				div_stall:0,
 				div_by_zero:0,
+				pc: 0,
+				insn: 0,
+				rs2_data:0,
+				cycle_status : CYCLE_RESET,
 				div_rd:0
 				//insn: 0
 			};
@@ -176,6 +195,10 @@ module division_states(
 				is_divu:0,
 				div_stall:0,
 				div_by_zero:0,
+				pc: 0,
+				insn: 0,
+				rs2_data:0,
+				cycle_status : CYCLE_RESET,
 				div_rd:0
 				//insn: 0
 			};
@@ -190,6 +213,10 @@ module division_states(
 				is_divu:0,
 				div_stall:0,
 				div_by_zero:0,
+				pc: 0,
+				insn: 0,
+				rs2_data:0,
+				cycle_status : CYCLE_RESET,
 				div_rd:0
 				//insn: 0
 			};
@@ -204,6 +231,10 @@ module division_states(
 				is_divu:0,
 				div_stall:0,
 				div_by_zero:0,
+				pc: 0,
+				insn: 0,
+				rs2_data:0,
+				cycle_status : CYCLE_RESET,
 				div_rd:0
 				//insn: 0
 			};
@@ -218,6 +249,10 @@ module division_states(
 				is_divu:0,
 				div_stall:0,
 				div_by_zero:0,
+				pc: 0,
+				insn: 0,
+				rs2_data:0,
+				cycle_status : CYCLE_RESET,
 				div_rd:0
 				//insn: 0
 			};
@@ -232,6 +267,10 @@ module division_states(
 				is_divu:0,
 				div_stall:0,
 				div_by_zero:0,
+				pc: 0,
+				insn: 0,
+				rs2_data:0,
+				cycle_status : CYCLE_RESET,
 				div_rd:0
 				//insn: 0
 			};
@@ -248,6 +287,10 @@ module division_states(
 				is_divu:i_insn_divu, 
 				div_stall:i_div_stall,
 				div_by_zero: i_div_by_zero,
+				pc: i_div_pc,
+				insn: i_div_insn,
+				rs2_data: i_div_rs2_data,
+				cycle_status : i_cycle_status,
 				div_rd: i_div_rd
 				//insn: i_div_insn
 			};
@@ -262,6 +305,10 @@ module division_states(
 				is_divu:divider_state0.is_divu, 
 				div_stall:divider_state0.div_stall,
 				div_by_zero:divider_state0.div_by_zero,
+				pc: divider_state0.pc,
+				insn: divider_state0.insn,
+				rs2_data: divider_state0.rs2_data,
+				cycle_status : divider_state0.cycle_status,
 				div_rd: divider_state0.div_rd
 				//insn: divider_state0.insn
 			};
@@ -276,6 +323,10 @@ module division_states(
 				is_divu:divider_state1.is_divu,
 				div_stall:divider_state1.div_stall,
 				div_by_zero:divider_state1.div_by_zero,
+				pc: divider_state1.pc,
+				insn: divider_state1.insn,
+				rs2_data: divider_state1.rs2_data,
+				cycle_status : divider_state1.cycle_status,
 				div_rd: divider_state1.div_rd
 				//insn: divider_state1.insn
 			};
@@ -290,6 +341,10 @@ module division_states(
 				is_divu:divider_state2.is_divu, 
 				div_stall:divider_state2.div_stall,
 				div_by_zero:divider_state2.div_by_zero,
+				pc: divider_state2.pc,
+				insn: divider_state2.insn,
+				rs2_data: divider_state2.rs2_data,
+				cycle_status : divider_state2.cycle_status,
 				div_rd: divider_state2.div_rd
 				//insn: divider_state2.insn
 			};
@@ -304,6 +359,10 @@ module division_states(
 				is_divu:divider_state3.is_divu, 
 				div_stall:divider_state3.div_stall,
 				div_by_zero:divider_state3.div_by_zero,
+				pc: divider_state3.pc,
+				insn: divider_state3.insn,
+				rs2_data: divider_state3.rs2_data,
+				cycle_status : divider_state3.cycle_status,
 				div_rd: divider_state3.div_rd
 				//insn: divider_state3.insn
 			};
@@ -318,6 +377,10 @@ module division_states(
 				is_divu:divider_state4.is_divu, 
 				div_stall:divider_state4.div_stall,
 				div_by_zero:divider_state4.div_by_zero,
+				pc: divider_state4.pc,
+				insn: divider_state4.insn,
+				rs2_data: divider_state4.rs2_data,
+				cycle_status : divider_state4.cycle_status,
 				div_rd: divider_state4.div_rd
 				//insn: divider_state4.insn
 			};
@@ -332,6 +395,10 @@ module division_states(
 				is_divu:divider_state5.is_divu,
 				div_stall:divider_state5.div_stall,
 				div_by_zero:divider_state5.div_by_zero,
+				pc: divider_state5.pc,
+				insn: divider_state5.insn,
+				rs2_data: divider_state5.rs2_data,
+				cycle_status : divider_state5.cycle_status,
 				div_rd: divider_state5.div_rd
 				//insn: divider_state5.insn
 			};
@@ -351,7 +418,11 @@ module division_states(
 	assign o_div_stall = divider_state6.div_stall;
 	assign o_div_by_zero = divider_state6.div_by_zero;
 	assign o_div_rd = divider_state6.div_rd;
-	//assign o_div_insn = divider_state6.div_insn;
+	assign o_div_pc = divider_state6.pc;
+	assign o_div_insn = divider_state6.insn;
+	assign o_div_rs2_data = divider_state6.rs2_data;
+	
+	assign o_cycle_status = divider_state6.cycle_status;
 	
 endmodule 
 
@@ -597,7 +668,7 @@ module DatapathPipelined (
   //div use stall 
   wire xd_div_dep_stall = (x_is_div) && ((mx_rs1_dep && (d_insn_rs1 == x_insn_rd)) || (mx_rs2_dep && (d_insn_rs2 == x_insn_rd) )) && (|x_insn_rd);
   wire xd_div_nondiv_stall = (x_is_div) && (~d_is_div);
-  wire xd_while_div_stall = x_while_divide_next && (xd_div_dep_stall || xd_div_nondiv_stall) ; 
+  wire xd_while_div_stall = x_while_divide_next || (xd_div_dep_stall || xd_div_nondiv_stall) ; 
   
    /****************/
   /* EXECUTE STAGE */
@@ -630,12 +701,12 @@ module DatapathPipelined (
     end else if(xd_while_div_stall) begin
 		begin
 		execute_state <= '{
-        pc:  x_pc_current,
-        insn: execute_state.insn,
-        cycle_status: (xd_div_dep_stall)?  CYCLE_DIV2USE : CYCLE_DIV ,
-		reg_s1_data: x_rs1_data ,
-		reg_s2_data: x_rs2_data,
-		rd: execute_state.rd
+        pc:  0,
+        insn: `NOP,
+        cycle_status: CYCLE_DIV ,
+		reg_s1_data: 0 ,
+		reg_s2_data: 0,
+		rd: 0
       };
 		end 
 	end else begin
@@ -792,11 +863,16 @@ module DatapathPipelined (
   logic [4:0] x_o_div_rd;
 	
   logic x_o_insn_rem,x_o_insn_div, x_o_insn_remu, x_o_insn_divu,  x_o_div_stall;
+  logic [`REG_SIZE] x_i_div_pc, x_o_div_pc , x_i_div_rs2_data, x_o_div_rs2_data;
+  logic [`INSN_SIZE] x_i_div_insn, x_o_div_insn;
+ cycle_status_e x_i_cycle_stat, x_o_cycle_stat;
   
   division_states indep_div_states(.clk(clk), .rst(rst), .i_div_stall(x_i_div_stall), .i_ready(x_i_ready), .i_rs1_N(x_i_rs1_N), .i_rs2_N(x_i_rs2_N), .i_div_by_zero(x_i_div_by_zero),
-									.i_insn_rem(x_i_insn_rem), .i_insn_div(x_i_insn_div), .i_insn_remu(x_insn_remu),.i_insn_divu(x_insn_divu), .i_div_rd(x_i_div_rd),
-									.o_ready(x_o_div_ready), .o_rs1_N(x_o_rs1_N), .o_rs2_N(x_o_rs2_N), .o_div_stall(x_o_div_stall), .o_div_by_zero(x_o_div_by_zero) ,
-									.o_insn_rem(x_o_insn_rem),  .o_insn_div(x_o_insn_div), .o_insn_remu(x_o_insn_remu), .o_insn_divu(x_o_insn_divu), .o_div_rd(x_o_div_rd) );
+									.i_insn_rem(x_i_insn_rem), .i_insn_div(x_i_insn_div), .i_insn_remu(x_insn_remu),.i_insn_divu(x_insn_divu), .i_div_rd(x_i_div_rd), .i_div_pc(x_i_div_pc),
+									.i_div_insn(x_i_div_insn), .i_div_rs2_data(x_i_div_rs2_data), .i_cycle_status(x_i_cycle_stat),
+									.o_div_rs2_data(x_o_div_rs2_data) , .o_cycle_status(x_o_cycle_stat),
+									.o_ready(x_o_div_ready), .o_rs1_N(x_o_rs1_N), .o_rs2_N(x_o_rs2_N), .o_div_stall(x_o_div_stall), .o_div_by_zero(x_o_div_by_zero) , .o_div_insn(x_o_div_insn),
+									.o_insn_rem(x_o_insn_rem),  .o_insn_div(x_o_insn_div), .o_insn_remu(x_o_insn_remu), .o_insn_divu(x_o_insn_divu), .o_div_rd(x_o_div_rd), .o_div_pc(x_o_div_pc));
   logic x_while_divide_current;
   logic [3:0] x_div_counter_current; 
   logic x_while_divide_next;
@@ -854,12 +930,20 @@ module DatapathPipelined (
       x_while_divide_current <= x_while_divide_next;
     end
   end
-  
+  //state propagated to memory
   logic[`INSN_SIZE] x_to_m_insn;
   logic[4:0] x_to_m_rd;
+  logic [`INSN_SIZE] x_to_m_pc;
+  logic [`REG_SIZE] x_to_m_rs2_data;
+  logic x_to_m_divuse_cycle_stat ;
+  cycle_status_e x_to_m_cycle_stat;
   always_comb begin
 	x_to_m_insn = execute_state.insn;
 	x_to_m_rd = execute_state.rd;
+	x_to_m_pc = execute_state.pc;
+	x_to_m_rs2_data = x_rs2_data;
+	x_to_m_divuse_cycle_stat = 0;
+	x_to_m_cycle_stat = execute_state.cycle_status;
 	x_halt_next = 0;
 	x_out = 0;
 	x_illegal_insn = 1'b0;
@@ -894,7 +978,7 @@ module DatapathPipelined (
 	x_branchinTime = 0;
 	x_jumpinTime = 0;
 	
-	//indepenedent divide pipeline
+	//divide instructions shift register input
 	
 	x_i_insn_rem = x_insn_rem;
 	x_i_insn_div = x_insn_div;
@@ -906,6 +990,10 @@ module DatapathPipelined (
 	x_i_div_stall = 0;
 	x_i_div_by_zero = 0;
 	x_i_div_rd = 0 ;
+	x_i_div_pc = 0;
+	x_i_div_insn = 0;
+	x_i_div_rs2_data = 0;
+	x_i_cycle_stat = execute_state.cycle_status;
 	
 	//div stall stuffs
 	x_div_counter_next = 0;
@@ -1031,24 +1119,43 @@ module DatapathPipelined (
 			else if(x_insn_mulhsu) begin
 				x_out = x_mulhsu_res[63:32];
 			end
-			else if(x_insn_div) begin
+			else if(x_insn_div || x_insn_rem || x_insn_divu || x_insn_remu) begin
 				//inputs to divider module
-				x_i_dividend_mag = (x_rs1_data[`REG_DIM-1]==1'b1) ? (~x_rs1_data)+32'b1 : x_rs1_data;
-				x_i_divisor_mag = (x_rs2_data[`REG_DIM-1]==1'b1) ? (~x_rs2_data)+32'b1 : x_rs2_data;
-				x_dividend = x_i_dividend_mag;
-				x_divisor = x_i_divisor_mag;
-				x_i_div_rd = x_insn_rd;
-				
+				if(x_insn_div || x_insn_rem) begin
+					x_i_dividend_mag = (x_rs1_data[`REG_DIM-1]==1'b1) ? (~x_rs1_data)+32'b1 : x_rs1_data;
+					x_i_divisor_mag = (x_rs2_data[`REG_DIM-1]==1'b1) ? (~x_rs2_data)+32'b1 : x_rs2_data;
+					x_dividend = x_i_dividend_mag;
+					x_divisor = x_i_divisor_mag;
+				end
+				else if(x_insn_divu || x_insn_remu) begin
+					x_dividend = x_rs1_data;
+					x_divisor = x_rs2_data;
+				end
 				//inputs to divider state module
 				x_i_ready = 1'b1;
 				x_i_rs1_N = x_rs1_data[`REG_DIM-1];
 				x_i_rs2_N = x_rs2_data[`REG_DIM-1];
 				x_i_div_by_zero = &(~x_rs2_data) ; 
+				x_i_div_rd = x_insn_rd;
+				x_i_div_pc = x_pc_current;			
+				x_i_div_insn = execute_state.insn;
+				x_i_div_rs2_data = x_rs2_data;
 				
 				//state propagated to memory
 				x_to_m_rd = 0;
 				x_reg_write_en = 1'b0;
+				x_to_m_insn = `NOP;
+				x_to_m_pc = 0;
+				x_to_m_rs2_data = 0;
+				x_to_m_divuse_cycle_stat = 1'b1;
+				//begin stalling
+				if(xd_div_nondiv_stall || xd_div_dep_stall) begin
+					x_div_counter_next = x_div_counter_current + 4'b0001;
+					x_while_divide_next = 1'b1;
+				end
+				
 			end
+			
 			else begin
 				x_reg_write_en = 1'b0;
 				x_mem_or_alu = 2'b0;
@@ -1210,11 +1317,46 @@ module DatapathPipelined (
 			x_illegal_insn = 1'b1;
 		end
       endcase
+	  //stall state updates
+	if(x_while_divide_current) begin
+		if(x_div_counter_current == 4'h7) begin
+			x_while_divide_next = 1'b0;
+			x_div_counter_next = 0;
+		end
+		else begin
+			//stall state update 
+			x_while_divide_next = 1'b1;
+			x_div_counter_next = x_div_counter_current + 4'b0001;
+			//state propagated to memory
+			x_to_m_rd = 0;
+			x_reg_write_en = 1'b0;
+			x_to_m_insn = `NOP;
+			x_to_m_divuse_cycle_stat = 1'b1;
+			x_to_m_pc = 0;
+			x_to_m_rs2_data = 0;
+			//inputs to divider state shift register
+			x_i_ready = 1'b0;
+			x_i_rs1_N = 0;
+			x_i_rs2_N = 0;
+			x_i_div_by_zero = 0; 
+			x_i_insn_div = 0;
+			x_i_div_rd = 0;
+			x_i_div_pc = 0;
+			x_i_div_insn = 0;
+			x_i_div_rs2_data = 0;			
+		end
+	end
 	  if(x_o_div_ready) begin
+		//state propagated to Memory
+		x_reg_write_en = 1'b1;
+		x_mem_or_alu = 2'b10;
+		x_to_m_rd = x_o_div_rd;
+		x_to_m_insn = x_o_div_insn;
+		x_to_m_pc = x_o_div_pc;
+		x_to_m_rs2_data = x_o_div_rs2_data;
+		x_to_m_divuse_cycle_stat = 1'b0;
+		x_to_m_cycle_stat = x_o_cycle_stat;
 		if(x_o_insn_div) begin
-			x_reg_write_en = 1'b1;
-			x_mem_or_alu = 2'b10;
-			x_to_m_rd = x_o_div_rd;
 			x_N = x_o_rs1_N^ x_o_rs2_N;
 			if(x_o_div_by_zero) begin
 				x_out = 32'hffff_ffff;
@@ -1222,6 +1364,27 @@ module DatapathPipelined (
 			else begin
 				x_out = (x_N)? ( (~x_quotient_res) + 32'b1) : x_quotient_res;
 			end
+		end
+		else if(x_o_insn_rem) begin
+			//output
+			x_N = x_o_rs1_N^ x_o_rs2_N;
+			x_out = (x_o_rs1_N) ?( (~x_remu_res) + 32'b1): x_remu_res;
+		end
+		else if(x_o_insn_divu) begin
+			x_out = x_quotient_res;
+		end
+		else if(x_o_insn_remu) begin
+			x_out = x_remu_res;
+		end
+		else begin
+			x_reg_write_en = 1'b0;
+			x_mem_or_alu = 2'b00;
+			x_to_m_rd = 0;
+			x_to_m_insn = 0;
+			x_to_m_pc = 0;
+			x_to_m_rs2_data = 0;
+			x_to_m_divuse_cycle_stat = 1'b0;
+			x_to_m_cycle_stat = CYCLE_INVALID;
 		end
 	  end
 	  if (x_branchinTime) begin
@@ -1271,10 +1434,10 @@ module DatapathPipelined (
     end else begin
       begin
         memory_state <= '{
-		  pc: execute_state.pc,
-          insn: x_insn,
-		  cycle_status: execute_state.cycle_status,
-		  reg_s2_data: x_rs2_data,
+		  pc: x_to_m_pc,
+          insn: x_to_m_insn,
+		  cycle_status:( (x_to_m_divuse_cycle_stat) ? CYCLE_DIV : x_to_m_cycle_stat),
+		  reg_s2_data: x_to_m_rs2_data,
 		  exe_out:x_out, //
 		  reg_write_en: x_reg_write_en, //
 		  halt: x_halt_next, //
@@ -1305,7 +1468,13 @@ module DatapathPipelined (
   
   
   wire[4:0] m_insn_rd = memory_state.rd;
-  
+  wire [255:0] m_disasm;
+  Disasm #(
+      .PREFIX("x")
+  ) disasm_3memory (
+      .insn  (m_insn),
+      .disasm(m_disasm)
+  );
   
   
   
@@ -1476,6 +1645,14 @@ module DatapathPipelined (
   wire [`INSN_SIZE] w_insn = writeback_state.insn;
   wire [`OPCODE_SIZE] w_insn_opcode = w_insn[6:0];
   wire[4:0] w_insn_rd = writeback_state.rd;
+  
+  wire [255:0] w_disasm;
+  Disasm #(
+      .PREFIX("x")
+  ) disasm_4writeback (
+      .insn  (w_insn),
+      .disasm(w_disasm)
+  );
   
   wire[1:0] w_mem_or_alu = writeback_state.mem_or_alu;
   
