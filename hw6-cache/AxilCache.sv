@@ -380,6 +380,7 @@ module AxilCache #(
 				cur_proc_ARREADY <= 1'b1;
 				current_state <= CACHE_AVAILABLE;
 			end
+			
 		end
 		else if(proc.ARVALID && proc.ARREADY) begin //fresh read request that is accepted
 			if(read_hit) begin
@@ -482,6 +483,9 @@ module AxilCache #(
 	end
 	always_ff @(posedge ACLK) begin
 		flag <= next_flag; 
+		if(cache_buf_adr_valid && proc.RREADY) begin
+			flag <=0;
+		end
 	end
 
 always_ff @(posedge ACLK) begin
@@ -511,24 +515,14 @@ always_ff @(posedge ACLK) begin
 					valid[cache_idx_miss] <= 1'b1;
 					data[cache_idx_miss] <= mem.RDATA;
 				end
-				if(!proc.RREADY) begin
-					cache_buf_adr_valid <=1'b1;
-					cache_buf_addr <= miss_addr;
-					cur_proc_ARREADY <=1'b0;
-				end
+			
 				
 			end
 			else begin 
 				miss_addr <= miss_addr;
 			end
 		end
-		else begin
-			if(!proc.RREADY) begin
-				cur_proc_RDATA <=0 ;
-				cur_proc_RVALID <= 1'b0;
-				cur_proc_ARREADY <= 1'b1;
-			end
-		end
+		
 	end
 	
  //cache write 
