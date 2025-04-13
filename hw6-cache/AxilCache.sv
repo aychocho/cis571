@@ -417,8 +417,10 @@ module AxilCache #(
 	
 	wire [IndexBits-1:0] cache_idx_miss = o_miss_addr[BlockOffsetBits + IndexBits -1 :BlockOffsetBits] ;
 	wire [TagBits - 1:0] cache_tag_miss = o_miss_addr[`ADDR_WIDTH-1: `ADDR_WIDTH-TagBits] ;
-	
+	logic flag;
+	logic next_flag;
 	always_comb begin
+		next_flag = 0;
 		proc.RVALID = cur_proc_RVALID;
 		proc.RDATA = cur_proc_RDATA;
 		proc.ARREADY = cur_proc_ARREADY;
@@ -426,15 +428,14 @@ module AxilCache #(
 		if(current_state == CACHE_AVAILABLE) begin
 			if(mem.RVALID && mem.RREADY &&o_miss_valid) begin //memory responded
 				next_state =  CACHE_AVAILABLE;
-				
-				if(proc.RREADY) begin
-					proc.RDATA = mem.RDATA;
-					proc.RVALID = 1'b1;
-					proc.ARREADY = 1'b1;
-			
+				proc.RDATA = mem.RDATA;
+				proc.RVALID = 1'b1;
+				proc.ARREADY = 1'b1;
+				if(!proc.RREADY) begin
+					next_state = CACHE_AWAIT_MANAGER_READY;
 				end
 				else begin
-					next_state = CACHE_AWAIT_MANAGER_READY;
+					next_flag = 1'b1;
 				end
 				
 				
@@ -443,16 +444,15 @@ module AxilCache #(
 		else if(current_state == CACHE_AWAIT_FILL_RESPONSE) begin //waiting for memory response
 			if(mem.RVALID && mem.RREADY) begin //memory responded
 				next_state =  CACHE_AVAILABLE;
-				
-				if(proc.RREADY) begin
-					proc.RDATA = mem.RDATA;
-					proc.RVALID = 1'b1;
-					proc.ARREADY = 1'b1;
-					
-			
+				proc.RDATA = mem.RDATA;
+				proc.RVALID = 1'b1;
+				proc.ARREADY = 1'b1;
+		
+				if(!proc.RREADY) begin
+					next_state = CACHE_AWAIT_MANAGER_READY;
 				end
 				else begin
-					next_state = CACHE_AWAIT_MANAGER_READY;
+					next_flag = 1'b1;
 				end
 				
 				
@@ -470,8 +470,18 @@ module AxilCache #(
 					proc.RVALID = 1'b1;
 					proc.ARREADY = 1'b1;
 					next_state =  CACHE_AVAILABLE;
+					next_flag = 1'b1;
 				end
 		end
+		if(flag && !o_miss_valid) begin
+			proc.RVALID =1'b0;
+			proc.RDATA = 0;
+			proc.ARREADY =1'b1;
+			next_flag = 1'b0;
+		end
+	end
+	always_ff @(posedge ACLK) begin
+		flag <= next_flag; 
 	end
 
 always_ff @(posedge ACLK) begin
@@ -489,6 +499,7 @@ always_ff @(posedge ACLK) begin
 					cache_buf_addr <= miss_addr;
 					cur_proc_ARREADY <=1'b0;
 				end
+				
 			end
 		end
 		else if(current_state == CACHE_AWAIT_FILL_RESPONSE) begin //waiting for memory response
@@ -505,9 +516,17 @@ always_ff @(posedge ACLK) begin
 					cache_buf_addr <= miss_addr;
 					cur_proc_ARREADY <=1'b0;
 				end
+				
 			end
 			else begin 
 				miss_addr <= miss_addr;
+			end
+		end
+		else begin
+			if(!proc.RREADY) begin
+				cur_proc_RDATA <=0 ;
+				cur_proc_RVALID <= 1'b0;
+				cur_proc_ARREADY <= 1'b1;
 			end
 		end
 	end
