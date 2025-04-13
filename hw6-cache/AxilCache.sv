@@ -367,6 +367,8 @@ module AxilCache #(
   end
   
     //cache read hit
+	logic [`ADDR_WIDTH-1:0] pending_data;
+	logic pending_read_valid;
 	always_ff @(posedge ACLK) begin
 		current_state <= next_state;
 		if(cache_buf_adr_valid) begin //buffered read request
@@ -395,14 +397,28 @@ module AxilCache #(
 				else begin
 					cur_proc_RVALID <=1'b1;
 					cur_proc_RDATA <= data[cache_idx];
+					pending_data <= data[cache_idx];
+					pending_read_valid <= 1'b1;
 				end
 			end
 			else begin //a cache read miss. request fill from memory
 				current_state <= CACHE_AWAIT_FILL_RESPONSE;
 				miss_addr <= proc.ARADDR;
-				cur_proc_RVALID <=1'b0;
-				cur_proc_RDATA <= 0;
-				cur_proc_ARREADY <=1'b1;
+				if(pending_read_valid) begin
+					if(proc.RREADY) begin
+						//pending_data <= data[cache_idx];
+						pending_read_valid <= 1'b0;
+					end
+					else begin
+						current_state <= CACHE_AWAIT_MANAGER_READY;
+						cur_proc_ARREADY <=1'b0;
+					end
+				end
+				else begin
+					cur_proc_RVALID <=1'b0;
+					cur_proc_RDATA <= 0;
+					cur_proc_ARREADY <=1'b1;
+				end
 			end
 		end
 		else if(proc.RVALID && proc.RREADY) begin //no requests just data done sending from cache to processor. 
@@ -434,6 +450,7 @@ module AxilCache #(
 				proc.ARREADY = 1'b1;
 				if(!proc.RREADY) begin
 					next_state = CACHE_AWAIT_MANAGER_READY;
+					proc.ARREADY = 1'b0;
 				end
 				else begin
 					next_flag = 1'b1;
@@ -460,9 +477,11 @@ module AxilCache #(
 			end
 			else begin 
 				next_state = CACHE_AWAIT_FILL_RESPONSE; //if memory is yet to respond
-				proc.RVALID =1'b0;
-				proc.RDATA = 0;
-				proc.ARREADY =1'b1;
+				if(!pending_read_valid) begin
+					proc.RVALID =1'b0;
+					proc.RDATA = 0;
+					proc.ARREADY =1'b1;
+				end
 			end
 		end
 		else if(current_state == CACHE_AWAIT_MANAGER_READY) begin
@@ -498,11 +517,7 @@ always_ff @(posedge ACLK) begin
 					valid[cache_idx_miss] <= 1'b1;
 					data[cache_idx_miss] <= mem.RDATA;
 				end
-				if(!proc.RREADY) begin
-					cache_buf_adr_valid <=1'b1;
-					cache_buf_addr <= miss_addr;
-					cur_proc_ARREADY <=1'b0;
-				end
+				
 				
 			end
 		end
@@ -670,3 +685,4 @@ module AxilCacheTester #(
   );
 endmodule // AxilCacheTester
 `endif
+
