@@ -238,7 +238,7 @@ module AxilCache #(
   logic [BLOCK_SIZE_BITS-1:0] data[NUM_SETS];
   logic [TagBits-1:0] tag[NUM_SETS];
   logic [0:0] valid[NUM_SETS];
-  logic [0:0] dirty[NUM_SETS];
+  logic [0:0] dirty[NUM_SETS]; //:(
 
   // initialize cache state to all zeroes
   genvar seti;
@@ -284,9 +284,12 @@ module AxilCache #(
   logic [`ADDR_WIDTH - 1: 0] o_miss_addr;
   logic o_miss_valid;
   cache_fill_states miss_state(.clk(ACLK),.rst(~ARESETn),.i_addr(input_addr),.i_valid(input_valid),.o_addr(o_miss_addr),.o_valid(o_miss_valid));
+  logic flag ;
   always_ff @(posedge ACLK) begin
     if (!ARESETn) begin // NB: reset when ARESETn == 0
       current_state <= CACHE_AVAILABLE;
+	  
+	  flag <=1'b1; 
 	  
 	  cache_buf_addr <= 0;
       cache_buf_adr_valid <= 1'b0;
@@ -372,7 +375,7 @@ module AxilCache #(
 		if(cache_buf_adr_valid) begin //buffered read request
 			if(proc.RREADY) begin //send data when processor is ready to recieve
 				//send data 
-				cur_proc_RVALID <=1'b1;
+				cur_proc_RVALID <=1'b1; 
 				cur_proc_RDATA <= data[cache_buf_addr[BlockOffsetBits + IndexBits -1 :BlockOffsetBits]];
 				//clear buffered read request
 				cache_buf_adr_valid<=1'b0;
@@ -387,7 +390,7 @@ module AxilCache #(
 					//buffer read
 					cache_buf_adr_valid <=1'b1;
 					cache_buf_addr <= proc.ARADDR;
-					cur_proc_ARREADY <=1'b0;
+					cur_proc_ARREADY <= 1'b0;
 					current_state <= CACHE_AWAIT_MANAGER_READY;
 					
 				end
@@ -401,13 +404,13 @@ module AxilCache #(
 				miss_addr <= proc.ARADDR;
 				cur_proc_RVALID <=1'b0;
 				cur_proc_RDATA <= 0;
-				cur_proc_ARREADY <=1'b1;
+				cur_proc_ARREADY <=1'b1; //ARREADY 
 			end
 		end
 		else if(proc.RVALID && proc.RREADY) begin //no requests just data done sending from cache to processor. 
 			cur_proc_RVALID <=1'b0;
+			cur_proc_RDATA <= 0;
 			cur_proc_ARREADY <=1'b1;
-			cur_proc_RDATA <=0;
 			current_state <= CACHE_AVAILABLE;
 			
 		end
@@ -418,23 +421,38 @@ module AxilCache #(
 	wire [IndexBits-1:0] cache_idx_miss = o_miss_addr[BlockOffsetBits + IndexBits -1 :BlockOffsetBits] ;
 	wire [TagBits - 1:0] cache_tag_miss = o_miss_addr[`ADDR_WIDTH-1: `ADDR_WIDTH-TagBits] ;
 	
+	
+
+	always_ff @(posedge ACLK) begin
+		if(proc.RREADY) begin
+			flag <=1;
+		end
+		else if(mem.RVALID && mem.RREADY) begin
+			flag <=1'b0;
+		end
+	end
 	always_comb begin
 		proc.RVALID = cur_proc_RVALID;
 		proc.RDATA = cur_proc_RDATA;
 		proc.ARREADY = cur_proc_ARREADY;
 		next_state = current_state;
 		if(current_state == CACHE_AVAILABLE) begin
-			if(mem.RVALID && mem.RREADY &&o_miss_valid) begin //memory responded
+			if(mem.RVALID && mem.RREADY && o_miss_valid) begin //memory responded
 				next_state =  CACHE_AVAILABLE;
+				proc.RDATA = mem.RDATA;
+				proc.RVALID = 1'b1;
+				proc.ARREADY = 1'b1;
 				
-				if(proc.RREADY) begin
-					proc.RDATA = mem.RDATA;
-					proc.RVALID = 1'b1;
-					proc.ARREADY = 1'b1;
+				if(!proc.RREADY) begin
+					next_state = CACHE_AWAIT_MANAGER_READY;
 			
 				end
 				else begin
-					next_state = CACHE_AWAIT_MANAGER_READY;
+					if(flag) begin
+						proc.RDATA = 0;
+						proc.RVALID = 1'b0;
+						proc.ARREADY = 1'b1;
+					end
 				end
 				
 				
@@ -443,16 +461,19 @@ module AxilCache #(
 		else if(current_state == CACHE_AWAIT_FILL_RESPONSE) begin //waiting for memory response
 			if(mem.RVALID && mem.RREADY) begin //memory responded
 				next_state =  CACHE_AVAILABLE;
-				
-				if(proc.RREADY) begin
-					proc.RDATA = mem.RDATA;
-					proc.RVALID = 1'b1;
-					proc.ARREADY = 1'b1;
-					
-			
-				end
-				else begin
+				proc.RDATA = mem.RDATA;
+				proc.RVALID = 1'b1;
+				proc.ARREADY = 1'b1;
+				if(!proc.RREADY) begin
 					next_state = CACHE_AWAIT_MANAGER_READY;
+				end
+				else begin 
+					//:(
+					if(flag) begin
+						proc.RDATA = 0;
+						proc.RVALID = 1'b0;
+						proc.ARREADY = 1'b1;
+					end
 				end
 				
 				
@@ -500,14 +521,11 @@ always_ff @(posedge ACLK) begin
 					valid[cache_idx_miss] <= 1'b1;
 					data[cache_idx_miss] <= mem.RDATA;
 				end
-				if(!proc.RREADY) begin
+				if(!proc.RREADY) begin // :/ 
 					cache_buf_adr_valid <=1'b1;
 					cache_buf_addr <= miss_addr;
 					cur_proc_ARREADY <=1'b0;
 				end
-			end
-			else begin 
-				miss_addr <= miss_addr;
 			end
 		end
 	end
