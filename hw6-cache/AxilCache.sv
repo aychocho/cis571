@@ -284,6 +284,12 @@ module AxilCache #(
   logic [`ADDR_WIDTH - 1: 0] o_miss_addr;
   logic o_miss_valid;
   cache_fill_states miss_state(.clk(ACLK),.rst(~ARESETn),.i_addr(input_addr),.i_valid(input_valid),.o_addr(o_miss_addr),.o_valid(o_miss_valid));
+  
+  logic miss_wait; 
+  logic [`DATA_WIDTH - 1:0] pending_miss_data;
+  logic pending_miss_data_valid;
+  
+  logic pending_miss_write;
   always_ff @(posedge ACLK) begin
     if (!ARESETn) begin // NB: reset when ARESETn == 0
       current_state <= CACHE_AVAILABLE;
@@ -313,6 +319,13 @@ module AxilCache #(
 	  mem.WVALID <=1'b0;
 	  mem.WDATA<=0;
 	  mem.WSTRB <=0;
+	  
+	  miss_wait <=0;
+	  
+	  pending_miss_data_valid <=0;
+	  pending_miss_data <=0;
+	  
+	  pending_miss_write <=0;
      
     end
   end
@@ -367,10 +380,22 @@ module AxilCache #(
   end
   
     //cache read hit
-	logic [`ADDR_WIDTH-1:0] pending_data;
+	
+	
+	logic [`ADDR_WIDTH - 1:0] pending_miss_addr;
+	logic pending_miss_valid;
+	
+	logic [`DATA_WIDTH - 1:0] pending_data;
 	logic pending_read_valid;
+	
 	always_ff @(posedge ACLK) begin
 		current_state <= next_state;
+		if(pending_read_valid && miss_wait) begin
+			miss_wait <=1'b1;
+		end
+		else begin
+			miss_wait <=1'b0;
+		end
 		if(cache_buf_adr_valid) begin //buffered read request
 			if(proc.RREADY) begin //send data when processor is ready to recieve
 				//send data 
@@ -397,27 +422,21 @@ module AxilCache #(
 				else begin
 					cur_proc_RVALID <=1'b1;
 					cur_proc_RDATA <= data[cache_idx];
-					pending_data <= data[cache_idx];
+					pending_data <= data[cache_idx]; //hit followed by a miss. it ensures hit doesn't get overwritten by miss
 					pending_read_valid <= 1'b1;
 				end
 			end
 			else begin //a cache read miss. request fill from memory
 				current_state <= CACHE_AWAIT_FILL_RESPONSE;
 				miss_addr <= proc.ARADDR;
-				if(pending_read_valid) begin
-					if(proc.RREADY) begin
-						//pending_data <= data[cache_idx];
-						pending_read_valid <= 1'b0;
-					end
-					else begin
-						current_state <= CACHE_AWAIT_MANAGER_READY;
-						cur_proc_ARREADY <=1'b0;
-					end
-				end
-				else begin
+				
+				if(!pending_read_valid) begin
 					cur_proc_RVALID <=1'b0;
 					cur_proc_RDATA <= 0;
 					cur_proc_ARREADY <=1'b1;
+				end
+				else begin
+					miss_wait <= 1'b1;
 				end
 			end
 		end
@@ -425,29 +444,54 @@ module AxilCache #(
 			cur_proc_RVALID <=1'b0;
 			cur_proc_ARREADY <=1'b1;
 			cur_proc_RDATA <=0;
-			current_state <= CACHE_AVAILABLE;
+			current_state <= (miss_wait) ? CACHE_AWAIT_FILL_RESPONSE : CACHE_AVAILABLE;
 			
 		end
+		if(pending_read_valid) begin //pending cache hit value until processor responds to prevent it being overwritten by cache read miss
+			if(proc.RREADY) begin
+				//pending_data <= data[cache_idx];
+				pending_read_valid <= 1'b0;
+			end
+			else begin
+				cur_proc_ARREADY <=1'b0;
+				current_state <= CACHE_AWAIT_MANAGER_READY;
+			end
+		end
+		if(miss_wait && !pending_read_valid) begin
+			pending_miss_write <= 1'b1;
+		end
 	end
-	
+
 	//cache read miss
 	
 	wire [IndexBits-1:0] cache_idx_miss = o_miss_addr[BlockOffsetBits + IndexBits -1 :BlockOffsetBits] ;
 	wire [TagBits - 1:0] cache_tag_miss = o_miss_addr[`ADDR_WIDTH-1: `ADDR_WIDTH-TagBits] ;
 	logic flag;
 	logic next_flag;
+	logic [3:0] where_am_i;
 	always_comb begin
 		next_flag = 0;
 		proc.RVALID = cur_proc_RVALID;
 		proc.RDATA = cur_proc_RDATA;
 		proc.ARREADY = cur_proc_ARREADY;
 		next_state = current_state;
+		where_am_i = 0;
 		if(current_state == CACHE_AVAILABLE) begin
+			where_am_i = 1;
 			if(mem.RVALID && mem.RREADY &&o_miss_valid) begin //memory responded
-				next_state =  CACHE_AVAILABLE;
-				proc.RDATA = mem.RDATA;
-				proc.RVALID = 1'b1;
-				proc.ARREADY = 1'b1;
+				where_am_i = 6;
+				if(miss_wait && !pending_read_valid) begin
+					next_state =  CACHE_AVAILABLE;
+					proc.RDATA = 0;
+					proc.RVALID = 1'b0;
+				end
+				else begin
+					next_state =  CACHE_AVAILABLE;
+					proc.RDATA = mem.RDATA;
+					proc.RVALID = 1'b1;
+				end
+				
+				//proc.ARREADY = 1'b1;
 				if(!proc.RREADY) begin
 					next_state = CACHE_AWAIT_MANAGER_READY;
 					proc.ARREADY = 1'b0;
@@ -455,16 +499,30 @@ module AxilCache #(
 				else begin
 					next_flag = 1'b1;
 				end
-				
-				
 			end
+			else if(pending_miss_write) begin
+				where_am_i = 11;
+				next_state =  CACHE_AVAILABLE;
+				proc.RDATA = pending_miss_data;
+				proc.RVALID = 1'b1;
+		    end
+		
 		end
 		else if(current_state == CACHE_AWAIT_FILL_RESPONSE) begin //waiting for memory response
+			
 			if(mem.RVALID && mem.RREADY) begin //memory responded
-				next_state =  CACHE_AVAILABLE;
-				proc.RDATA = mem.RDATA;
-				proc.RVALID = 1'b1;
-				proc.ARREADY = 1'b1;
+				if(miss_wait && !pending_read_valid) begin
+					next_state =  CACHE_AVAILABLE;
+					proc.RDATA = 0;
+					proc.RVALID = 1'b0;
+					
+				end
+				else begin
+					next_state =  CACHE_AVAILABLE;
+					proc.RDATA = mem.RDATA;
+					proc.RVALID = 1'b1;
+				end
+				//proc.ARREADY = 1'b1;
 		
 				if(!proc.RREADY) begin
 					next_state = CACHE_AWAIT_MANAGER_READY;
@@ -472,28 +530,38 @@ module AxilCache #(
 				else begin
 					next_flag = 1'b1;
 				end
-				
-				
 			end
+			else if(pending_miss_write) begin
+				next_state =  CACHE_AVAILABLE;
+				proc.RDATA = pending_miss_data;
+				proc.RVALID = 1'b1;
+		    end
 			else begin 
 				next_state = CACHE_AWAIT_FILL_RESPONSE; //if memory is yet to respond
 				if(!pending_read_valid) begin
 					proc.RVALID =1'b0;
 					proc.RDATA = 0;
-					proc.ARREADY =1'b1;
+					//proc.ARREADY =1'b1;
+				end
+				else begin
+					proc.ARREADY = 1'b0;
 				end
 			end
 		end
 		else if(current_state == CACHE_AWAIT_MANAGER_READY) begin
+			where_am_i = 3;
 				if(proc.RREADY) begin
 					proc.RDATA = mem.RDATA;
 					proc.RVALID = 1'b1;
-					proc.ARREADY = 1'b1;
+					//proc.ARREADY = 1'b1;
 					next_state =  CACHE_AVAILABLE;
 					next_flag = 1'b1;
 				end
+				else begin
+					proc.ARREADY = 1'b0;
+				end
 		end
-		if(flag && !o_miss_valid) begin
+		if(flag && !o_miss_valid && !pending_miss_write) begin
 			proc.RVALID =1'b0;
 			proc.RDATA = 0;
 			proc.ARREADY =1'b1;
@@ -517,7 +585,12 @@ always_ff @(posedge ACLK) begin
 					valid[cache_idx_miss] <= 1'b1;
 					data[cache_idx_miss] <= mem.RDATA;
 				end
-				
+				if(miss_wait) begin
+					pending_miss_data_valid <=1'b1;
+					if(!pending_miss_data_valid) begin
+						pending_miss_data <=  mem.RDATA; 
+					end
+				end
 				
 			end
 		end
@@ -530,14 +603,23 @@ always_ff @(posedge ACLK) begin
 					valid[cache_idx_miss] <= 1'b1;
 					data[cache_idx_miss] <= mem.RDATA;
 				end
-			
+				if(miss_wait) begin
+					pending_miss_data_valid <=1'b1;
+					if(!pending_miss_data_valid) begin
+						pending_miss_data <=  mem.RDATA; 
+					end
+				end
 				
 			end
 			else begin 
 				miss_addr <= miss_addr;
 			end
 		end
-		
+		if(proc.RREADY && proc.RVALID) begin
+			pending_miss_write <= 0;
+			pending_miss_data <= 0;
+			pending_miss_data_valid <= 0;
+		end
 	end
 	
  //cache write 
