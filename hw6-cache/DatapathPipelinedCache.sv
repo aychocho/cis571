@@ -2,12 +2,15 @@
 
 // registers are 32 bits in RV32
 `define REG_SIZE 31:0
+`define REG_DIM 32
 
 // insns are 32 bits in RV32IM
 `define INSN_SIZE 31:0
-
+`define RESET 32'd0
 // RV opcodes are 7 bits
 `define OPCODE_SIZE 6:0
+
+`define NOP 32'h0000_0000
 
 `define ADDR_WIDTH 32
 `define DATA_WIDTH 32
