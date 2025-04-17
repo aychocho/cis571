@@ -541,10 +541,6 @@ module DatapathPipelinedCache (
 	.stall(x_div_stall)
   );
   
-
-  localparam bit True = 1'b1;
-  localparam bit False = 1'b0;
-
   // cycle counter
   logic [`REG_SIZE] cycles_current;
   always_ff @(posedge clk) begin
@@ -680,7 +676,7 @@ module DatapathPipelinedCache (
   
   wire [`OPCODE_SIZE] d_insn_opcode = d_insn[6:0];
   
-  
+  //do we need loads into registers from memory?
   wire d_reg_write1 = (d_insn_opcode == OpcodeLoad) || (d_insn_opcode == OpcodeLui) || (d_insn_opcode == OpcodeRegImm) || (d_insn_opcode == OpcodeRegReg);
   wire d_reg_write2 = d_reg_write1 || (d_insn_opcode == OpcodeAuipc) || (d_insn_opcode == OpcodeJal) || (d_insn_opcode == OpcodeJalr) ;
   wire [4:0] d_reg_rd = (d_reg_write2)?d_insn[11:7]:0;
@@ -1477,200 +1473,197 @@ module DatapathPipelinedCache (
   always_ff @(posedge clk) begin
     if (rst) begin
       memory_state <= '{
-		pc:0,
+        pc:0,
         insn: 0,
         cycle_status: CYCLE_RESET,
-		reg_s2_data: 0,
-		exe_out: x_out,
-		reg_write_en:0,
-		halt:0,
-		mem_or_alu: 0,
-		rd :0,
-		mem_is_lw:0,
-		mem_is_lh:0,
+        reg_s2_data: 0,
+        exe_out: x_out,
+        reg_write_en:0,
+        halt:0,
+        mem_or_alu: 0,
+        rd :0,
+        mem_is_lw:0,
+        mem_is_lh:0,
         mem_is_lhu:0,
         mem_is_lb:0,
         mem_is_lbu:0,
-  
         mem_is_sw:0,
         mem_is_sh:0,
         mem_is_sb:0,
-  
         is_load:0,
         is_store:0
       };
+      // init axil babyyy
+      dcache.RREADY <= 1;
+      dcache.BREADY <= 1;
     end else begin
-      begin
-        memory_state <= '{
-		  pc: x_to_m_pc,
-          insn: x_to_m_insn,
-		  cycle_status:( (x_to_m_divuse_cycle_stat) ? CYCLE_DIV : x_to_m_cycle_stat),
-		  reg_s2_data: x_to_m_rs2_data,
-		  exe_out:x_out, //
-		  reg_write_en: x_reg_write_en, //
-		  halt: x_halt_next, //
-		  mem_or_alu: x_mem_or_alu, //
-		  rd: x_to_m_rd, //
-		  mem_is_lw: x_mem_is_lw, //
-		  mem_is_lh: x_mem_is_lh, //
-          mem_is_lhu: x_mem_is_lhu, //
-          mem_is_lb: x_mem_is_lb, //
-          mem_is_lbu: x_mem_is_lbu, //
-          mem_is_sw: x_mem_is_sw, //
-          mem_is_sh: x_mem_is_sh, //
-          mem_is_sb: x_mem_is_sb, //
-  
-          is_load: x_is_load, //
-          is_store: x_is_store //
-		 
-        };
-      end
+      memory_state <= '{
+        pc: x_to_m_pc,
+        insn: x_to_m_insn,
+        cycle_status:( (x_to_m_divuse_cycle_stat) ? CYCLE_DIV : x_to_m_cycle_stat),
+        reg_s2_data: x_to_m_rs2_data,
+        exe_out:x_out,
+        reg_write_en: x_reg_write_en,
+        halt: x_halt_next,
+        mem_or_alu: x_mem_or_alu,
+        rd: x_to_m_rd,
+        mem_is_lw: x_mem_is_lw,
+        mem_is_lh: x_mem_is_lh,
+        mem_is_lhu: x_mem_is_lhu,
+        mem_is_lb: x_mem_is_lb,
+        mem_is_lbu: x_mem_is_lbu,
+        mem_is_sw: x_mem_is_sw,
+        mem_is_sh: x_mem_is_sh,
+        mem_is_sb: x_mem_is_sb,
+        is_load: x_is_load,
+        is_store: x_is_store
+      };
     end
   end
   
-  //:)
-  
+  // Memory stage signals
   wire [`INSN_SIZE] m_insn = memory_state.insn;
   wire [`REG_SIZE] m_pc = memory_state.pc;
   wire[4:0] m_insn_rs2 = m_insn[24:20];
-  
-  
   wire[4:0] m_insn_rd = memory_state.rd;
-  wire [255:0] m_disasm;
-  Disasm #(
-      .PREFIX("x")
-  ) disasm_3memory (
-      .insn  (m_insn),
-      .disasm(m_disasm)
-  );
-  
-  
-  
   cycle_status_e m_cycle_status = memory_state.cycle_status;
   wire [`REG_SIZE] m_reg_s2_data = memory_state.reg_s2_data;
   wire[`REG_SIZE] m_exe_out = memory_state.exe_out;
-  
   wire m_is_load = memory_state.is_load;
   wire m_is_store = memory_state.is_store;
   
-  
-  
-  wire m_insn_lw  = memory_state.mem_is_lw;
+  // Load/store type signals
+  wire m_insn_lw = memory_state.mem_is_lw;
   wire m_insn_lhu = memory_state.mem_is_lhu;
-  wire m_insn_lh  = memory_state.mem_is_lh;
+  wire m_insn_lh = memory_state.mem_is_lh;
   wire m_insn_lbu = memory_state.mem_is_lbu;
-  wire m_insn_lb  = memory_state.mem_is_lb;
-  
+  wire m_insn_lb = memory_state.mem_is_lb;
   wire m_insn_sw = memory_state.mem_is_sw;
   wire m_insn_sh = memory_state.mem_is_sh;
   wire m_insn_sb = memory_state.mem_is_sb;
   
-  //WM bypass:
-  
-  wire wm_bypass = (m_is_store) && (m_insn_rs2 == w_insn_rd) && (|w_insn_rd) ;  
-  
+  //WM bypass
+  wire wm_bypass = (m_is_store) && (m_insn_rs2 == w_insn_rd) && (|w_insn_rd);
   wire[`REG_SIZE] m_rs2_data = (wm_bypass)? w_dataReg: memory_state.reg_s2_data;
   
-	
-	logic m_illegal_insn;
-	logic [`REG_SIZE] m_mem_data ;
-	logic m_reg_write_en;
-	always_comb begin
-		m_illegal_insn = 1'b0;
-		addr_to_dmem = 4;
-		store_we_to_dmem = 0;
-		store_data_to_dmem = 0;
-		m_mem_data = 0;
-		m_reg_write_en = memory_state.reg_write_en;
-		if (m_is_load) begin
-			if(m_insn_lw) begin
-				addr_to_dmem = m_exe_out;
-				m_mem_data = load_data_from_dmem ; 
-			end
-			else if(m_insn_lb || m_insn_lbu) begin
-				addr_to_dmem = (m_exe_out)&(32'hffff_fffc);
-				case (m_exe_out[1:0])
-					2'b00: m_mem_data = (m_insn_lb) ? {{24{load_data_from_dmem[7]}},load_data_from_dmem[7:0]} : {{24{1'b0}},load_data_from_dmem[7:0]};
-					2'b01: m_mem_data = (m_insn_lb) ?{{24{load_data_from_dmem[15]}},load_data_from_dmem[15:8]}: {{24{1'b0}},load_data_from_dmem[15:8]};
-					2'b10: m_mem_data = (m_insn_lb) ?{{24{load_data_from_dmem[23]}},load_data_from_dmem[23:16]}: {{24{1'b0}},load_data_from_dmem[23:16]};
-					2'b11: m_mem_data = (m_insn_lb) ?{{24{load_data_from_dmem[31]}},load_data_from_dmem[31:24]}: {{24{1'b0}},load_data_from_dmem[31:24]};
-				endcase 
-			end
-			else if(m_insn_lh || m_insn_lhu) begin
-				addr_to_dmem = (m_exe_out)&(32'hffff_fffc);
-				case (m_exe_out[1:0])
-					2'b00: m_mem_data = (m_insn_lh) ? {{16{load_data_from_dmem[15]}},load_data_from_dmem[15:0]} : {{16{1'b0}},load_data_from_dmem[15:0]};
-					2'b01: m_mem_data = (m_insn_lh) ? {{16{load_data_from_dmem[23]}},load_data_from_dmem[23:8]} : {{16{1'b0}},load_data_from_dmem[23:8]};
-					2'b10: m_mem_data = (m_insn_lh) ?{{16{load_data_from_dmem[31]}},load_data_from_dmem[31:16]}: {{16{1'b0}},load_data_from_dmem[31:16]};
-					2'b11: begin
-						m_reg_write_en = 1'b0;
-						m_illegal_insn = 1'b1;
-					end
-				endcase 
-	        end
-			else begin
-				m_reg_write_en = 1'b0;
-				m_illegal_insn = 1'b1;
-			end
-		end
-		else if(m_is_store) begin
-			if(m_insn_sw) begin
-				addr_to_dmem = m_exe_out;
-				store_we_to_dmem = 4'hf;
-				store_data_to_dmem = m_rs2_data;
-			end
-			else if(m_insn_sh) begin
-				addr_to_dmem = (m_exe_out)&(32'hffff_fffc);
-				case (m_exe_out[1:0])
-					2'b00: begin
-						store_we_to_dmem = 4'h3;
-						store_data_to_dmem =m_rs2_data;
-					end
-					2'b01: begin 
-						store_we_to_dmem = 4'h6;
-						store_data_to_dmem = {m_rs2_data[23:0],{8{1'b0}}};
-					end
-					2'b10: begin 
-						store_we_to_dmem = 4'hc;
-						store_data_to_dmem = {m_rs2_data[15:0],{16{1'b0}}};
-					end
-					2'b11: begin 
-						/*
-						store_we_to_dmem = 4'h0;
-						store_data_to_dmem = 0;
-						*/
-						m_illegal_insn = 1'b1;
-						store_data_to_dmem = 0;
-						store_we_to_dmem = 4'h0;
-					end
-				endcase
-			end
-			else if(m_insn_sb) begin
-				addr_to_dmem = (m_exe_out)&(32'hffff_fffc);
-				case (m_exe_out[1:0])
-					2'b00: begin
-						store_we_to_dmem = 4'h1;
-						store_data_to_dmem = m_rs2_data;
-					end
-					2'b01: begin 
-						store_we_to_dmem = 4'h2;
-						store_data_to_dmem = {m_rs2_data[23:0],{8{1'b0}}};
-					end
-					2'b10: begin 
-						store_we_to_dmem = 4'h4;
-						store_data_to_dmem = {m_rs2_data[15:0],{16{1'b0}}};
-					end
-					2'b11: begin 
-						store_we_to_dmem = 4'h8;
-						store_data_to_dmem = {m_rs2_data[7:0],{24{1'b0}}};
-					end
-				endcase	
-			end
-			else begin
-				m_illegal_insn = 1'b1;
-			end
-		end
-	end
+  logic m_illegal_insn;
+  logic [`REG_SIZE] m_mem_data;
+  logic m_reg_write_en;
+  
+  // AXI-Lite memory interface
+  always_comb begin
+    m_illegal_insn = 1'b0;
+    m_mem_data = 0;
+    m_reg_write_en = memory_state.reg_write_en;
+    
+    // default signals
+    dcache.ARVALID = 0;
+    dcache.ARADDR = 0;
+    dcache.AWVALID = 0;
+    dcache.AWADDR = 0;
+    dcache.WVALID = 0;
+    dcache.WDATA = 0;
+    dcache.WSTRB = 4'h0;
+  
+    if (m_is_load) begin
+      // Set read address channel signals
+      dcache.ARVALID = 1;
+      dcache.ARADDR = m_exe_out;
+  
+      if(m_insn_lw) begin
+        if(&(~m_exe_out[1:0])) begin
+          m_mem_data = dcache.RDATA;
+        end else begin
+          m_reg_write_en = 1'b0;
+          m_illegal_insn = 1'b1;
+        end
+      end
+      else if(m_insn_lb || m_insn_lbu) begin
+        dcache.ARADDR = m_exe_out & 32'hffff_fffc;
+        case (m_exe_out[1:0])
+          2'b00: m_mem_data = (m_insn_lb) ? {{24{dcache.RDATA[7]}}, dcache.RDATA[7:0]} : 
+                                           {{24{1'b0}}, dcache.RDATA[7:0]};
+          2'b01: m_mem_data = (m_insn_lb) ? {{24{dcache.RDATA[15]}}, dcache.RDATA[15:8]} : 
+                                           {{24{1'b0}}, dcache.RDATA[15:8]};
+          2'b10: m_mem_data = (m_insn_lb) ? {{24{dcache.RDATA[23]}}, dcache.RDATA[23:16]} : 
+                                           {{24{1'b0}}, dcache.RDATA[23:16]};
+          2'b11: m_mem_data = (m_insn_lb) ? {{24{dcache.RDATA[31]}}, dcache.RDATA[31:24]} : 
+                                           {{24{1'b0}}, dcache.RDATA[31:24]};
+        endcase
+      end
+      else if(m_insn_lh || m_insn_lhu) begin
+        dcache.ARADDR = m_exe_out & 32'hffff_fffc;
+        case (m_exe_out[1:0])
+          2'b00: m_mem_data = (m_insn_lh) ? {{16{dcache.RDATA[15]}}, dcache.RDATA[15:0]} : 
+                                           {{16{1'b0}}, dcache.RDATA[15:0]};
+          2'b01: m_mem_data = (m_insn_lh) ? {{16{dcache.RDATA[23]}}, dcache.RDATA[23:8]} : 
+                                           {{16{1'b0}}, dcache.RDATA[23:8]};
+          2'b10: m_mem_data = (m_insn_lh) ? {{16{dcache.RDATA[31]}}, dcache.RDATA[31:16]} : 
+                                           {{16{1'b0}}, dcache.RDATA[31:16]};
+          2'b11: begin
+            m_reg_write_en = 1'b0;
+            m_illegal_insn = 1'b1;
+          end
+        endcase
+      end
+    end
+    else if(m_is_store) begin
+      // Set write address channel signals
+      dcache.AWVALID = 1;
+      dcache.WVALID = 1;
+      
+      if(m_insn_sw) begin
+        if(&(~m_exe_out[1:0])) begin
+          dcache.AWADDR = m_exe_out;
+          dcache.WDATA = m_rs2_data;
+          dcache.WSTRB = 4'hf;
+        end else begin
+          m_illegal_insn = 1'b1;
+        end
+      end
+      else if(m_insn_sh) begin
+        dcache.AWADDR = m_exe_out & 32'hffff_fffc;
+        case (m_exe_out[1:0])
+          2'b00: begin
+            dcache.WSTRB = 4'h3;
+            dcache.WDATA = m_rs2_data;
+          end
+          2'b01: begin
+            dcache.WSTRB = 4'h6;
+            dcache.WDATA = {m_rs2_data[23:0], 8'b0};
+          end
+          2'b10: begin
+            dcache.WSTRB = 4'hc;
+            dcache.WDATA = {m_rs2_data[15:0], 16'b0};
+          end
+          2'b11: begin
+            m_illegal_insn = 1'b1;
+          end
+        endcase
+      end
+      else if(m_insn_sb) begin
+        dcache.AWADDR = m_exe_out & 32'hffff_fffc;
+        case (m_exe_out[1:0])
+          2'b00: begin
+            dcache.WSTRB = 4'h1;
+            dcache.WDATA = m_rs2_data;
+          end
+          2'b01: begin
+            dcache.WSTRB = 4'h2;
+            dcache.WDATA = {m_rs2_data[23:0], 8'b0};
+          end
+          2'b10: begin
+            dcache.WSTRB = 4'h4;
+            dcache.WDATA = {m_rs2_data[15:0], 16'b0};
+          end
+          2'b11: begin
+            dcache.WSTRB = 4'h8;
+            dcache.WDATA = {m_rs2_data[7:0], 24'b0};
+          end
+        endcase
+      end
+    end
+  end
   
   
    /****************/
