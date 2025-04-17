@@ -511,6 +511,37 @@ module DatapathPipelinedCache (
     output cycle_status_e trace_writeback_cycle_status
 );
 
+  RegFile rf (
+    .clk(clk),
+    .rst(rst),
+    .we(w_regwe),
+    .rd( w_insn_rd),
+    .rd_data(w_dataReg),
+    .rs1(d_insn_rs1),
+    .rs2(d_insn_rs2),
+    .rs1_data(d_rs1_data_reg),
+    .rs2_data(d_rs2_data_reg)
+  );
+
+  cla mathematatics(
+    .a(x_a),
+    .b(x_b),
+    .cin(x_cin),
+    .sum(x_sum)
+  );
+
+  //division stuffs
+  DividerUnsignedPipelined div_inst(
+	.i_dividend(x_dividend), 
+	.i_divisor(x_divisor), 
+	.o_remainder(x_remu_res), 
+	.o_quotient(x_quotient_res),
+	.clk(clk),
+	.rst(rst),
+	.stall(x_div_stall)
+  );
+  
+
   localparam bit True = 1'b1;
   localparam bit False = 1'b0;
 
@@ -541,25 +572,15 @@ module DatapathPipelinedCache (
   localparam bit [`OPCODE_SIZE] OpcodeAuipc = 7'b00_101_11;
   localparam bit [`OPCODE_SIZE] OpcodeLui = 7'b01_101_11;
 
-  // cycle counter, not really part of any stage but useful for orienting within GtkWave
-  // do not rename this as the testbench uses this value
-  logic [`REG_SIZE] cycles_current;
-  always_ff @(posedge clk) begin
-    if (rst) begin
-      cycles_current <= 0;
-    end else begin
-      cycles_current <= cycles_current + 1;
-    end
-  end
 
   /***************/
   /* FETCH STAGE */
   /***************/
 
-  logic [`REG_SIZE] f_pc_current,x_pc_next;
-  wire [`REG_SIZE] f_to_d_pc;
-  wire [`REG_SIZE] f_insn;
+  logic [`REG_SIZE] f_pc_current, x_pc_next;
   cycle_status_e f_cycle_status;
+  //DEBUG ONLY
+  logic [`REG_SIZE] f_insn;
   
 
   // program counter
@@ -568,26 +589,41 @@ module DatapathPipelinedCache (
       f_pc_current <= 32'd0;
       // NB: use CYCLE_NO_STALL since this is the value that will persist after the last reset cycle
       f_cycle_status <= CYCLE_NO_STALL;
+	  //cache ready signal
+	  icache.RREADY <= 1;
     end else begin
 	  f_cycle_status <= CYCLE_NO_STALL;
       f_pc_current <= ((xd_lw_dep_stall || fence_stall || xd_while_div_stall)? f_pc_current:x_pc_next);
     end
   end
-  // send PC to imem
-  assign pc_to_imem = f_pc_current;
-  assign f_to_d_pc = (x_branchinTime || x_jumpinTime) ? 32'b0 : f_pc_current;
-  assign f_insn = (x_branchinTime || x_jumpinTime) ? `NOP: insn_from_imem;
-  
 
-  // Here's how to disassemble an insn into a string you can view in GtkWave.
-  // Use PREFIX to provide a 1-character tag to identify which stage the insn comes from.
-  wire [255:0] f_disasm;
-  Disasm #(
-      .PREFIX("F")
-  ) disasm_0fetch (
-      .insn  (f_insn),
-      .disasm(f_disasm)
-  );
+  // set ARVALID signal
+  always_ff @(posedge clk) begin
+	//if stalling, ARVALID high bc master/manager waiting
+    if (~x_branchinTime & ~xd_lw_dep_stall & ~fence_stall & ~xd_while_div_stall) begin
+      icache.ARVALID <= 1;
+    end else if (x_branchinTime) begin
+	  //if branching, ARVALID high
+      icache.ARVALID <= 1;
+	end else begin
+		//if not stalling or branching, ARVALID low bc manager not waiting
+		icache.ARVALID <= 0;
+	end
+  end
+
+  // send PC to cache
+  assign icache.ARADDR = f_pc_current;
+  
+// WE DONT NEED THIS ANYMORE BC OF AXIL CACHE
+//   // Here's how to disassemble an insn into a string you can view in GtkWave.
+//   // Use PREFIX to provide a 1-character tag to identify which stage the insn comes from.
+//   wire [255:0] f_disasm;
+//   Disasm #(
+//       .PREFIX("F")
+//   ) disasm_0fetch (
+//       .insn  (f_insn),
+//       .disasm(f_disasm)
+//   );
 
   /****************/
   /* DECODE STAGE */
@@ -595,6 +631,9 @@ module DatapathPipelinedCache (
 
   // this shows how to package up state in a `struct packed`, and how to pass it between stages
   stage_decode_t decode_state;
+  //d_insn
+  wire [`REG_SIZE] d_insn;
+  // decode now!
   always_ff @(posedge clk) begin
     if (rst) begin
       decode_state <= '{
@@ -605,24 +644,30 @@ module DatapathPipelinedCache (
 	end else if(xd_lw_dep_stall || fence_stall || xd_while_div_stall) begin //avoid fetch pushing next instruction when in stall 
 		
 	   decode_state <= '{
-          pc: d_pc_current,
-          insn: d_insn,
+          pc: decode_state.pc,
+          insn: decode_state.insn,
           cycle_status: decode_state.cycle_status
         }; 
 		
     end else begin
         decode_state <= '{
-          pc: f_to_d_pc,
-          insn: f_insn,
+          pc: f_pc_current,
+          insn: 0,
           cycle_status: ((x_branchinTime || x_jumpinTime)? CYCLE_TAKEN_BRANCH : f_cycle_status)
         };
     end
   end
+  //we grab the instruction from the icache in the decode stage rather than in the fetch stage
+  // assign d_insn = icache.RDATA;
+  
+  //with squashing
+  assign d_insn = ((x_branchinTime || x_jumpinTime) ? `NOP : icache.RDATA);
+  //DEBUG ONLY
   wire [255:0] d_disasm;
   Disasm #(
       .PREFIX("D")
   ) disasm_1decode (
-      .insn  (decode_state.insn),
+      .insn  (d_insn),
       .disasm(d_disasm)
   );
 
@@ -630,20 +675,21 @@ module DatapathPipelinedCache (
   // TODO: the testbench requires that your register file instance is named `rf`
  
   wire [`REG_SIZE] d_pc_current = (x_branchinTime || x_jumpinTime)? 32'b0: decode_state.pc;
-  wire [`REG_SIZE] d_insn = ((x_branchinTime || x_jumpinTime) ? `NOP: decode_state.insn);
+  // Don't need to do this bc we're grabbing the instruction in the decode stage from AXIL BAYBEE
+  //wire [`REG_SIZE] d_insn = ((x_branchinTime || x_jumpinTime) ? `NOP: decode_state.insn);
   
-  wire [`OPCODE_SIZE] d_insn_opcode = decode_state.insn[6:0];
+  wire [`OPCODE_SIZE] d_insn_opcode = d_insn[6:0];
   
   
   wire d_reg_write1 = (d_insn_opcode == OpcodeLoad) || (d_insn_opcode == OpcodeLui) || (d_insn_opcode == OpcodeRegImm) || (d_insn_opcode == OpcodeRegReg);
   wire d_reg_write2 = d_reg_write1 || (d_insn_opcode == OpcodeAuipc) || (d_insn_opcode == OpcodeJal) || (d_insn_opcode == OpcodeJalr) ;
-  wire [4:0] d_reg_rd = (d_reg_write2)?decode_state.insn[11:7]:0;
+  wire [4:0] d_reg_rd = (d_reg_write2)?d_insn[11:7]:0;
   
   wire [`REG_SIZE] d_to_x_insn ;
   
   cycle_status_e d_cycle_status = ((x_branchinTime || x_jumpinTime) ? CYCLE_TAKEN_BRANCH:decode_state.cycle_status);
-  wire [4:0] d_insn_rs1 = decode_state.insn[19:15];
-  wire [4:0] d_insn_rs2 = decode_state.insn[24:20];
+  wire [4:0] d_insn_rs1 = d_insn[19:15];
+  wire [4:0] d_insn_rs2 = d_insn[24:20];
   wire [`REG_SIZE] d_rs1_data;
   wire [`REG_SIZE] d_rs2_data;
   
@@ -652,22 +698,12 @@ module DatapathPipelinedCache (
   
   
   
-    RegFile rf (
-    .clk(clk),
-    .rst(rst),
-    .we(w_regwe),
-    .rd( w_insn_rd),
-    .rd_data(w_dataReg),
-    .rs1(d_insn_rs1),
-    .rs2(d_insn_rs2),
-    .rs1_data(d_rs1_data_reg),
-    .rs2_data(d_rs2_data_reg)
-  );
+  
   //check for div insn
-  wire d_insn_div    = d_insn_opcode == OpcodeRegReg && decode_state.insn[31:25] == 7'd1 && decode_state.insn[14:12] == 3'b100;
-  wire d_insn_divu   = d_insn_opcode == OpcodeRegReg && decode_state.insn[31:25] == 7'd1 && decode_state.insn[14:12] == 3'b101;
-  wire d_insn_rem    = d_insn_opcode == OpcodeRegReg && decode_state.insn[31:25] == 7'd1 && decode_state.insn[14:12] == 3'b110;
-  wire d_insn_remu   = d_insn_opcode == OpcodeRegReg && decode_state.insn[31:25] == 7'd1 && decode_state.insn[14:12] == 3'b111;
+  wire d_insn_div    = d_insn_opcode == OpcodeRegReg && d_insn[31:25] == 7'd1 && d_insn[14:12] == 3'b100;
+  wire d_insn_divu   = d_insn_opcode == OpcodeRegReg && d_insn[31:25] == 7'd1 && d_insn[14:12] == 3'b101;
+  wire d_insn_rem    = d_insn_opcode == OpcodeRegReg && d_insn[31:25] == 7'd1 && d_insn[14:12] == 3'b110;
+  wire d_insn_remu   = d_insn_opcode == OpcodeRegReg && d_insn[31:25] == 7'd1 && d_insn[14:12] == 3'b111;
   
   wire d_is_div = d_insn_div || d_insn_divu || d_insn_rem || d_insn_remu;
   
@@ -885,12 +921,7 @@ module DatapathPipelinedCache (
   logic [`REG_SIZE] x_a;
   logic [`REG_SIZE] x_b;
   logic x_cin;
-  cla mathematatics(
-    .a(x_a),
-    .b(x_b),
-    .cin(x_cin),
-    .sum(x_sum)
-  );
+  //mathematic stuffs
   logic x_i_insn_rem, x_i_insn_div, x_i_insn_remu, x_i_insn_divu ;
   logic x_i_rs1_N, x_i_rs2_N, x_i_div_by_zero;
   logic [4:0] x_i_div_rd;
@@ -922,8 +953,8 @@ module DatapathPipelinedCache (
   logic [`REG_SIZE] x_rem_res,x_div_res;
 	
   wire x_div_stall = 1'b0;
-  DividerUnsignedPipelined div_inst(.i_dividend(x_dividend), .i_divisor(x_divisor), .o_remainder(x_remu_res), .o_quotient(x_quotient_res),.clk(clk),.rst(rst),.stall(x_div_stall));
   
+  // division stuffs
   logic x_illegal_insn;
   logic x_branchinTime;
   logic x_jumpinTime;
