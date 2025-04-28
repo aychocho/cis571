@@ -123,6 +123,7 @@ typedef struct packed {
 module division_states(
 	input logic clk,
     input logic rst,
+	input logic stall,
 	input logic i_insn_rem,
 	input logic i_insn_div,
 	input logic i_insn_remu,
@@ -296,7 +297,7 @@ module division_states(
 			};
 		
 		end 
-		else begin
+		else if(!stall) begin
 			divider_state0 <= '{
 				rs1_N:i_rs1_N, 
 				rs2_N:i_rs2_N, 
@@ -1095,8 +1096,8 @@ module DatapathPipelinedCache (
   logic [`REG_SIZE] x_i_div_pc, x_o_div_pc , x_i_div_rs2_data, x_o_div_rs2_data;
   logic [`INSN_SIZE] x_i_div_insn, x_o_div_insn;
  cycle_status_e x_i_cycle_stat, x_o_cycle_stat;
-  
-  division_states indep_div_states(.clk(clk), .rst(rst), .i_div_stall(x_i_div_stall), .i_ready(x_i_ready), .i_rs1_N(x_i_rs1_N), .i_rs2_N(x_i_rs2_N), .i_div_by_zero(x_i_div_by_zero),
+  wire x_div_stall = m_cache_miss_next || m_cache_miss_next_w;
+  division_states indep_div_states(.clk(clk), .rst(rst), .stall(x_div_stall), .i_div_stall(x_i_div_stall), .i_ready(x_i_ready), .i_rs1_N(x_i_rs1_N), .i_rs2_N(x_i_rs2_N), .i_div_by_zero(x_i_div_by_zero),
 									.i_insn_rem(x_i_insn_rem), .i_insn_div(x_i_insn_div), .i_insn_remu(x_insn_remu),.i_insn_divu(x_insn_divu), .i_div_rd(x_i_div_rd), .i_div_pc(x_i_div_pc),
 									.i_div_insn(x_i_div_insn), .i_div_rs2_data(x_i_div_rs2_data), .i_cycle_status(x_i_cycle_stat),
 									.o_div_rs2_data(x_o_div_rs2_data) , .o_cycle_status(x_o_cycle_stat),
@@ -1113,7 +1114,7 @@ module DatapathPipelinedCache (
   logic [`REG_SIZE] x_dividend_s, x_divisor_s;
   logic [`REG_SIZE] x_rem_res,x_div_res;
 	
-  wire x_div_stall = 1'b0;
+  
   DividerUnsignedPipelined div_inst(.i_dividend(x_dividend), .i_divisor(x_divisor), .o_remainder(x_remu_res), .o_quotient(x_quotient_res),.clk(clk),.rst(rst),.stall(x_div_stall));
   
   logic x_illegal_insn;
@@ -1908,10 +1909,8 @@ module DatapathPipelinedCache (
 				end
 			end
 			else if(m_insn_lh || m_insn_lhu) begin
-				if((m_exe_out[0] & m_exe_out[1] )) begin
-					m_illegal_insn = 1'b1;
-				end
-				else if(!m_cache_miss_current)begin
+				
+				if(!m_cache_miss_current)begin
 					m_reg_write_en = 0; 
 					m_to_w_insn = `NOP;
 				end
@@ -2380,6 +2379,4 @@ AxilMemory #(.NUM_WORDS(8192)) memory (
   );
 
 endmodule
-
-
 
