@@ -1,6 +1,5 @@
 `timescale 1ns / 1ns
 
-// registers are 32 bits in RV32
 `define REG_SIZE 31:0
 `define REG_DIM 32
 
@@ -11,6 +10,19 @@
 `define OPCODE_SIZE 6:0
 
 `define NOP 32'h0000_0000
+
+`ifndef DIVIDER_STAGES
+`define DIVIDER_STAGES 8
+`endif
+
+// registers are 32 bits in RV32
+`define REG_SIZE 31:0
+
+// insns are 32 bits in RV32IM
+`define INSN_SIZE 31:0
+
+// RV opcodes are 7 bits
+`define OPCODE_SIZE 6:0
 
 `define ADDR_WIDTH 32
 `define DATA_WIDTH 32
@@ -25,7 +37,7 @@
 `include "../hw2b-cla/cla.sv"
 `include "../hw4-multicycle/DividerUnsignedPipelined.sv"
 `include "../hw5-pipelined/cycle_status.sv"
-`include "AxilCache.sv"
+`include "AxilCache_ref.sv"
 
 module Disasm #(
     PREFIX = "D"
@@ -53,7 +65,7 @@ module Disasm #(
 `endif
 endmodule
 
-// TODO: Regfile + Pipeline structs copied in, monitor closely
+// TODO: copy over your RegFile and pipeline structs from HW5
 module RegFile (
     input logic [4:0] rd,
     input logic [`REG_SIZE] rd_data,
@@ -70,6 +82,8 @@ module RegFile (
  
   logic [`REG_SIZE] regs[NumRegs];
 
+  // TODO: your code here
+  
   //grab data from rs1 and rs2
   assign rs1_data = regs[rs1];
   assign rs2_data = regs[rs2];
@@ -86,6 +100,7 @@ module RegFile (
   end
 
 endmodule
+
 
 //state of division
 typedef struct packed {
@@ -434,7 +449,6 @@ endmodule
 /** state at the start of Decode stage */
 typedef struct packed {
   logic [`REG_SIZE] pc;
-  logic [`INSN_SIZE] insn;
   cycle_status_e cycle_status;
 } stage_decode_t;
 
@@ -485,16 +499,15 @@ typedef struct packed {
   logic halt;
   logic [1:0] mem_or_alu;
   logic [4:0] rd;
+  //logic mem_data_valid;
   
 } stage_writeback_t;
 
-//END: Copied pipeline structs
+
 
 module DatapathPipelinedCache (
     input wire clk,
     input wire rst,
-
-    // THESE REPLACE PC_TO_IMEM, INSN_FROM_IMEM, ADDR_TO_DMEM, LOAD_DATA_FROM_DMEM, STORE_DATA_TO_DMEM, STORE_WE_TO_DMEM
 
     // AXIL interface to insn memory
     axi_if.manager icache,
@@ -511,36 +524,9 @@ module DatapathPipelinedCache (
     output cycle_status_e trace_writeback_cycle_status
 );
 
-  RegFile rf (
-    .clk(clk),
-    .rst(rst),
-    .we(w_regwe),
-    .rd( w_insn_rd),
-    .rd_data(w_dataReg),
-    .rs1(d_insn_rs1),
-    .rs2(d_insn_rs2),
-    .rs1_data(d_rs1_data_reg),
-    .rs2_data(d_rs2_data_reg)
-  );
+  //localparam bit True = 1'b1;
+  //localparam bit False = 1'b0;
 
-  cla mathematatics(
-    .a(x_a),
-    .b(x_b),
-    .cin(x_cin),
-    .sum(x_sum)
-  );
-
-  //division stuffs
-  DividerUnsignedPipelined div_inst(
-	.i_dividend(x_dividend), 
-	.i_divisor(x_divisor), 
-	.o_remainder(x_remu_res), 
-	.o_quotient(x_quotient_res),
-	.clk(clk),
-	.rst(rst),
-	.stall(x_div_stall)
-  );
-  
   // cycle counter
   logic [`REG_SIZE] cycles_current;
   always_ff @(posedge clk) begin
@@ -551,13 +537,12 @@ module DatapathPipelinedCache (
     end
   end
 
-  // TODO:HW5b datapath copied in, NOW NEED TO ADAPT TO ACCEPTING AXILCACHE
-
-    // opcodes - see section 19 of RiscV spec
+  // TODO: copy in your HW5B datapath as a starting point
+  // opcodes - see section 19 of RiscV spec
   localparam bit [`OPCODE_SIZE] OpcodeLoad = 7'b00_000_11;
   localparam bit [`OPCODE_SIZE] OpcodeStore = 7'b01_000_11;
   localparam bit [`OPCODE_SIZE] OpcodeBranch = 7'b11_000_11;
-  localparam bit [`OPCODE_SIZE] OpcodeJalr = 7'b11_001_11;
+  localparam bit [`OPCODE_SIZE] OpcodeJalr = 7'b11_001_11; 
   localparam bit [`OPCODE_SIZE] OpcodeMiscMem = 7'b00_011_11;
   localparam bit [`OPCODE_SIZE] OpcodeJal = 7'b11_011_11;
 
@@ -568,58 +553,87 @@ module DatapathPipelinedCache (
   localparam bit [`OPCODE_SIZE] OpcodeAuipc = 7'b00_101_11;
   localparam bit [`OPCODE_SIZE] OpcodeLui = 7'b01_101_11;
 
+  // cycle counter, not really part of any stage but useful for orienting within GtkWave
+  // do not rename this as the testbench uses this value
+ 
 
   /***************/
   /* FETCH STAGE */
   /***************/
-
-  logic [`REG_SIZE] f_pc_current, x_pc_next;
-  cycle_status_e f_cycle_status;
-  //DEBUG ONLY
-  logic [`REG_SIZE] f_insn;
+  //stall management wire 
+  wire stall_break_cache_write = m_cache_miss_current_w && dcache.BVALID ; 
+  wire stall_break_cache_read = m_cache_miss_current && dcache.RVALID && !wd_lw_dep_stall; 
+  wire stall_break_cache_read_no_dep = m_cache_miss_current && dcache.RVALID; 
   
-
+  logic [`REG_SIZE] next_f_pc_current; 
+  logic [`REG_SIZE] f_pc_current,x_pc_next;
+  wire [`REG_SIZE] f_to_d_pc;
+  cycle_status_e f_cycle_status;
+  
+  
   // program counter
+  logic next_icache_ARVALID ; // sets icache.ARVALID to 0 in the next cycle during stall 
+  logic next_icache_RREADY; 
   always_ff @(posedge clk) begin
     if (rst) begin
-      f_pc_current <= 32'd0;
+      next_f_pc_current <= 32'd0;
       // NB: use CYCLE_NO_STALL since this is the value that will persist after the last reset cycle
       f_cycle_status <= CYCLE_NO_STALL;
-	  //cache ready signal
-	  icache.RREADY <= 1;
+	   next_icache_RREADY <= 1'b1;
     end else begin
 	  f_cycle_status <= CYCLE_NO_STALL;
-      f_pc_current <= ((xd_lw_dep_stall || fence_stall || xd_while_div_stall)? f_pc_current:x_pc_next);
+      next_f_pc_current <= ((xd_lw_dep_stall || fence_stall || xd_while_div_stall || m_cache_miss_next || m_cache_miss_next_w)? f_pc_current:x_pc_next);
+	  next_icache_RREADY <= 1'b1;
     end
   end
+  // set icache.ARVALID to 1 if we don't have stalls 
 
-  // set ARVALID signal
+  
   always_ff @(posedge clk) begin
-	//if stalling, ARVALID high bc master/manager waiting
-    if (~x_branchinTime & ~xd_lw_dep_stall & ~fence_stall & ~xd_while_div_stall) begin
-      icache.ARVALID <= 1;
-    end else if (x_branchinTime) begin
-	  //if branching, ARVALID high
-      icache.ARVALID <= 1;
-	end else begin
-		//if not stalling or branching, ARVALID low bc manager not waiting
-		icache.ARVALID <= 0;
+    if ( ~(xd_lw_dep_stall|| fence_stall || xd_while_div_stall || m_cache_miss_next || m_cache_miss_next_w)) begin //no stall so ready to send next PC to instruction memory
+      next_icache_ARVALID <= 1'b1;
+	  next_icache_RREADY <= 1'b1;
+	end
+	else begin //stop sending requests when stalling 
+	   next_icache_ARVALID <= 1'b0;
+	   next_icache_RREADY <= 1'b0 ; //not ready to recieve new instructions from imem while stalling . so value is held at insn 
 	end
   end
-
-  // send PC to cache
-  assign icache.ARADDR = f_pc_current;
   
-// WE DONT NEED THIS ANYMORE BC OF AXIL CACHE
-//   // Here's how to disassemble an insn into a string you can view in GtkWave.
-//   // Use PREFIX to provide a 1-character tag to identify which stage the insn comes from.
-//   wire [255:0] f_disasm;
-//   Disasm #(
-//       .PREFIX("F")
-//   ) disasm_0fetch (
-//       .insn  (f_insn),
-//       .disasm(f_disasm)
-//   );
+  //bypass pc value when the cache responds 
+ 
+  
+  assign icache.ARADDR = f_pc_current;
+  always_comb begin //update icache.ARVALID + bypass pc value when cache responds 
+	icache.ARVALID = next_icache_ARVALID;
+	f_pc_current = next_f_pc_current; 
+	if(rst) begin
+		icache.ARVALID = 0;
+		f_pc_current = 0; 
+	end
+	else if(stall_break_cache_read || stall_break_cache_write) begin
+		//icache.ARVALID = ((x_prev_jumpinTime || x_prev_branchinTime)? 1'b0 : 1'b1);
+		icache.ARVALID = 1'b1;
+		f_pc_current = x_pc_next_prev; 
+	end
+	if( (x_branchinTime || x_jumpinTime )) begin
+		icache.ARVALID = 0; 
+	end
+	
+  end
+  
+  //send PC to Decode stage 
+  assign f_to_d_pc = (x_branchinTime || x_jumpinTime) ? 32'b0 : f_pc_current;
+  
+  logic [`REG_SIZE] f_to_d_pc_prev ; 
+  always_ff @(posedge clk) begin
+	if(rst) begin
+		f_to_d_pc_prev <=0;
+	end
+	else begin
+		f_to_d_pc_prev <= f_to_d_pc ; 
+	end
+  end
 
   /****************/
   /* DECODE STAGE */
@@ -627,40 +641,72 @@ module DatapathPipelinedCache (
 
   // this shows how to package up state in a `struct packed`, and how to pass it between stages
   stage_decode_t decode_state;
-  //d_insn
-  wire [`REG_SIZE] d_insn;
-  // decode now!
   always_ff @(posedge clk) begin
     if (rst) begin
       decode_state <= '{
         pc: 0,
-        insn: 0,
         cycle_status: CYCLE_RESET
       };
-	end else if(xd_lw_dep_stall || fence_stall || xd_while_div_stall) begin //avoid fetch pushing next instruction when in stall 
+	end else if(xd_lw_dep_stall  || fence_stall || xd_while_div_stall || m_cache_miss_next || m_cache_miss_next_w) begin //avoid fetch pushing next instruction when in stall 
 		
 	   decode_state <= '{
-          pc: decode_state.pc,
-          insn: decode_state.insn,
-          cycle_status: decode_state.cycle_status
+          pc: d_pc_current,
+          cycle_status: d_cycle_status
         }; 
 		
     end else begin
         decode_state <= '{
-          pc: f_pc_current,
-          insn: 0,
+          pc: f_to_d_pc,
           cycle_status: ((x_branchinTime || x_jumpinTime)? CYCLE_TAKEN_BRANCH : f_cycle_status)
         };
     end
   end
-  //we grab the instruction from the icache in the decode stage rather than in the fetch stage
-  // assign d_insn = icache.RDATA;
-  
-  //with squashing
-  assign d_insn = ((x_branchinTime || x_jumpinTime) ? `NOP : icache.RDATA);
-  //DEBUG ONLY
   wire [255:0] d_disasm;
-  Disasm #(
+  // recieve instruction from instruction memory
+  logic [`ADDR_WIDTH -1:0] d_prev_insn;
+  logic [`ADDR_WIDTH -1:0] decode_insn; 
+  
+  
+  cycle_status_e d_cycle_status; 
+  always_comb begin
+	icache.RREADY = next_icache_RREADY; 
+	d_cycle_status = decode_state.cycle_status; 
+	decode_insn = ( (icache.RREADY)? ( (icache.RVALID) ? icache.RDATA:`NOP ) : d_prev_insn );  //ensure instruction is valid before recieving it 
+	if(stall_break_cache_read || stall_break_cache_write) begin
+		icache.RREADY = 1'b1;
+	end
+	if( (stall_break_cache_read || stall_break_cache_write) &&(x_prev_branchinTime || x_prev_jumpinTime)) begin
+		decode_insn = `NOP; //flush invalid instruction loaded in previous cycle
+		d_cycle_status = CYCLE_TAKEN_BRANCH; 
+	end
+	else begin
+		decode_insn = ( (icache.RREADY)? ( (icache.RVALID) ? icache.RDATA:`NOP ) : d_prev_insn );  //ensure instruction is valid before recieving it 
+	end
+	
+  end
+  //if processor manager isn't ready to recieve new instruction during stall it holds on to previous instruction. 
+  
+  //wire [`ADDR_WIDTH -1:0] decode_insn = ( (icache.RVALID) ? icache.RDATA:`NOP );  //ensure instruction is valid before recieving it 
+  
+  always_ff @(posedge clk) begin
+	if(rst) begin
+		d_prev_insn <= 0;
+		d_cycle_status_prev <= CYCLE_RESET; 
+	end
+	else begin
+		d_prev_insn <= decode_insn;
+		d_cycle_status_prev <= d_cycle_status; 
+	end
+  end
+  wire[255:0] icache_disasm; 
+  Disasm #( 
+      .PREFIX("F")
+  ) disasm_0fetch (
+      .insn  (icache.RDATA),
+      .disasm(icache_disasm)
+  );
+  
+  Disasm #( 
       .PREFIX("D")
   ) disasm_1decode (
       .insn  (d_insn),
@@ -669,23 +715,27 @@ module DatapathPipelinedCache (
 
   // TODO: your code here, though you will also need to modify some of the code above
   // TODO: the testbench requires that your register file instance is named `rf`
- 
-  wire [`REG_SIZE] d_pc_current = (x_branchinTime || x_jumpinTime)? 32'b0: decode_state.pc;
-  // Don't need to do this bc we're grabbing the instruction in the decode stage from AXIL BAYBEE
-  //wire [`REG_SIZE] d_insn = ((x_branchinTime || x_jumpinTime) ? `NOP: decode_state.insn);
   
-  wire [`OPCODE_SIZE] d_insn_opcode = d_insn[6:0];
+  //bypass F stage pc value when cache responds 
+  wire [`REG_SIZE] decode_pc = (stall_break_cache_read || stall_break_cache_write) ? f_to_d_pc_prev: decode_state.pc;
   
-  //do we need loads into registers from memory?
+  wire d_is_stall = (xd_lw_dep_stall || fence_stall || xd_while_div_stall || m_cache_miss_next || m_cache_miss_next_w) ;
+  wire [`REG_SIZE] d_pc_current = (x_branchinTime || x_jumpinTime)? 32'b0: decode_pc;
+  wire [`REG_SIZE] d_insn = ((x_branchinTime || x_jumpinTime) ? `NOP: decode_insn);
+  
+  wire [`OPCODE_SIZE] d_insn_opcode = decode_insn[6:0];
+  
   wire d_reg_write1 = (d_insn_opcode == OpcodeLoad) || (d_insn_opcode == OpcodeLui) || (d_insn_opcode == OpcodeRegImm) || (d_insn_opcode == OpcodeRegReg);
   wire d_reg_write2 = d_reg_write1 || (d_insn_opcode == OpcodeAuipc) || (d_insn_opcode == OpcodeJal) || (d_insn_opcode == OpcodeJalr) ;
-  wire [4:0] d_reg_rd = (d_reg_write2)?d_insn[11:7]:0;
+  wire [4:0] d_reg_rd = (d_reg_write2) ? decode_insn[11:7]:0;
   
   wire [`REG_SIZE] d_to_x_insn ;
   
-  cycle_status_e d_cycle_status = ((x_branchinTime || x_jumpinTime) ? CYCLE_TAKEN_BRANCH:decode_state.cycle_status);
-  wire [4:0] d_insn_rs1 = d_insn[19:15];
-  wire [4:0] d_insn_rs2 = d_insn[24:20];
+  cycle_status_e d_cycle_status_prev ;
+  
+  
+  wire [4:0] d_insn_rs1 = decode_insn[19:15];
+  wire [4:0] d_insn_rs2 = decode_insn[24:20];
   wire [`REG_SIZE] d_rs1_data;
   wire [`REG_SIZE] d_rs2_data;
   
@@ -694,12 +744,22 @@ module DatapathPipelinedCache (
   
   
   
-  
+    RegFile rf (
+    .clk(clk),
+    .rst(rst),
+    .we(w_regwe),
+    .rd( w_insn_rd),
+    .rd_data(w_dataReg),
+    .rs1(d_insn_rs1),
+    .rs2(d_insn_rs2),
+    .rs1_data(d_rs1_data_reg),
+    .rs2_data(d_rs2_data_reg)
+  );
   //check for div insn
-  wire d_insn_div    = d_insn_opcode == OpcodeRegReg && d_insn[31:25] == 7'd1 && d_insn[14:12] == 3'b100;
-  wire d_insn_divu   = d_insn_opcode == OpcodeRegReg && d_insn[31:25] == 7'd1 && d_insn[14:12] == 3'b101;
-  wire d_insn_rem    = d_insn_opcode == OpcodeRegReg && d_insn[31:25] == 7'd1 && d_insn[14:12] == 3'b110;
-  wire d_insn_remu   = d_insn_opcode == OpcodeRegReg && d_insn[31:25] == 7'd1 && d_insn[14:12] == 3'b111;
+  wire d_insn_div    = d_insn_opcode == OpcodeRegReg && decode_insn[31:25] == 7'd1 && decode_insn[14:12] == 3'b100;
+  wire d_insn_divu   = d_insn_opcode == OpcodeRegReg && decode_insn[31:25] == 7'd1 && decode_insn[14:12] == 3'b101;
+  wire d_insn_rem    = d_insn_opcode == OpcodeRegReg && decode_insn[31:25] == 7'd1 && decode_insn[14:12] == 3'b110;
+  wire d_insn_remu   = d_insn_opcode == OpcodeRegReg && decode_insn[31:25] == 7'd1 && decode_insn[14:12] == 3'b111;
   
   wire d_is_div = d_insn_div || d_insn_divu || d_insn_rem || d_insn_remu;
   
@@ -708,29 +768,36 @@ module DatapathPipelinedCache (
   
   //load use stall 
   
-  /*
-  opcodes that need rs1 value at X stage
-   OpcodeLoad = 7'b00_000_11;
-  localparam bit [`OPCODE_SIZE] OpcodeStore = 7'b01_000_11; //need rs2 data at M stage
-  localparam bit [`OPCODE_SIZE] OpcodeBranch = 7'b11_000_11; //need rs2 data at X stage
+  wire mx_rs1_dep1 = (d_insn_opcode == OpcodeRegReg)||(d_insn_opcode == OpcodeRegImm)||(d_insn_opcode == OpcodeStore)||(d_insn_opcode == OpcodeBranch) || (d_insn_opcode == OpcodeJalr);
+  wire mx_rs1_dep = mx_rs1_dep1 || (d_insn_opcode == OpcodeLoad); 
   
-
-  localparam bit [`OPCODE_SIZE] OpcodeRegImm = 7'b00_100_11;
-  localparam bit [`OPCODE_SIZE] OpcodeRegReg = 7'b01_100_11; //need rs2 data at X stage
-
-
-  */
-  
-  wire mx_rs1_dep = (d_insn_opcode == OpcodeRegReg)||(d_insn_opcode == OpcodeRegImm)||(d_insn_opcode == OpcodeStore)||(d_insn_opcode == OpcodeBranch) || (d_insn_opcode == OpcodeLoad);
   wire mx_rs2_dep = (d_insn_opcode == OpcodeRegReg)||(d_insn_opcode == OpcodeBranch);
+  
   wire xd_load_dep = ( ( mx_rs1_dep && (x_insn_rd == d_insn_rs1) ) )||( ( mx_rs2_dep && (x_insn_rd == d_insn_rs2) ) ); 
   wire xd_lw_dep_stall = (~x_branchinTime && ~x_jumpinTime)&&(|x_insn_rd )&&(x_insn_opcode == OpcodeLoad)&&xd_load_dep;
   
-  assign d_to_x_insn = (xd_lw_dep_stall || fence_stall) ? `NOP: d_insn;
   
+  
+  //stall if load dependency is in the M stage as load is ready after writeback 
+  wire md_load_dep = ( ( mx_rs1_dep && (m_insn_rd == d_insn_rs1) ) )||( ( mx_rs2_dep && (m_insn_rd == d_insn_rs2) ) ); 
+  wire md_lw_dep_stall = (~x_branchinTime && ~x_jumpinTime)&&(|m_insn_rd )&&(m_insn_opcode == OpcodeLoad)&&md_load_dep;
+  
+  //stall if load is in writeback stage and there is a dependency on d stage
+  wire wx_rs1_dep1 = (d_prev_insn[6:0] == OpcodeRegReg)||(d_prev_insn[6:0] == OpcodeRegImm)||(d_prev_insn[6:0] == OpcodeStore)||(d_prev_insn[6:0] == OpcodeBranch) ;
+  wire wx_rs1_dep = wx_rs1_dep1 || (d_prev_insn[6:0] == OpcodeLoad) || (d_prev_insn[6:0] == OpcodeJalr); 
+  
+  wire wx_rs2_dep = (d_prev_insn[6:0] == OpcodeRegReg)||(d_prev_insn[6:0] == OpcodeBranch);
+  
+  wire wd_load_dep = ( ( wx_rs1_dep && (w_insn_rd == d_prev_insn[19:15]) ) )||( ( wx_rs2_dep && (w_insn_rd == d_prev_insn[24:20]) ) ); 
+  wire wd_lw_dep_stall = (|w_insn_rd )&&(w_insn_opcode == OpcodeLoad)&&wd_load_dep;
+  
+  
+  assign d_to_x_insn = (xd_lw_dep_stall || fence_stall || m_cache_miss_next || m_cache_miss_next_w) ? `NOP: d_insn; //insn propagated to X stage
+  
+  //WD bypass
   wire wd_bypass_s1 = (w_insn_rd == d_insn_rs1 ) && (|w_insn_rd);
   wire wd_bypass_s2 = (w_insn_rd == d_insn_rs2 ) && (|w_insn_rd);
-  
+
   assign d_rs1_data = (wd_bypass_s1)? w_dataReg : d_rs1_data_reg;
   assign d_rs2_data = (wd_bypass_s2)? w_dataReg : d_rs2_data_reg;
   
@@ -738,6 +805,43 @@ module DatapathPipelinedCache (
   wire xd_div_dep_stall = (x_is_div) && ((mx_rs1_dep && (d_insn_rs1 == x_insn_rd)) || (mx_rs2_dep && (d_insn_rs2 == x_insn_rd) )) && (|x_insn_rd);
   wire xd_div_nondiv_stall = (x_is_div) && (~d_is_div);
   wire xd_while_div_stall = x_while_divide_next || (xd_div_dep_stall || xd_div_nondiv_stall) ; 
+  
+  logic [`REG_SIZE] d_prev_to_x_insn;
+  logic [`REG_SIZE] d_to_x_prev_insn;
+  logic [`REG_SIZE] d_prev_pc_current; 
+  logic [`REG_SIZE] d_prev_rs1_data;
+  logic [`REG_SIZE] d_prev_rs2_data; 
+  logic [4:0] d_prev_reg_rd ; 
+  logic fence_stall_prev;
+  logic xd_lw_dep_stall_prev; 
+  logic xd_while_div_stall_prev;
+  
+  logic md_lw_dep_stall_prev; 
+  //bypass decode insn to x when data cache responds
+  always_ff @(posedge clk) begin
+	if(rst) begin
+		d_prev_to_x_insn <=0;
+        d_to_x_prev_insn <=0;
+        d_prev_pc_current <=0; 
+        d_prev_rs1_data <=0 ;
+        d_prev_rs2_data <=0; 
+        d_prev_reg_rd <=0; 
+        fence_stall_prev <=0;
+        xd_while_div_stall_prev <=0;
+		md_lw_dep_stall_prev <=0; 
+	end
+	else begin
+		d_prev_to_x_insn <= d_to_x_insn;
+        d_to_x_prev_insn <= d_insn;
+        d_prev_pc_current <= d_pc_current; 
+        d_prev_rs1_data <= d_rs1_data ;
+        d_prev_rs2_data <= d_rs2_data; 
+        d_prev_reg_rd <= d_reg_rd; 
+        fence_stall_prev <= fence_stall; 
+        xd_while_div_stall_prev <= xd_while_div_stall;
+		md_lw_dep_stall_prev <= md_lw_dep_stall; 
+	end
+  end
   
    /****************/
   /* EXECUTE STAGE */
@@ -756,7 +860,7 @@ module DatapathPipelinedCache (
 		rd: 0
 		
       };
-	end else if(xd_lw_dep_stall || fence_stall) begin
+	end else if(xd_lw_dep_stall  || fence_stall) begin
 		begin
 		execute_state <= '{
         pc:  0,
@@ -765,6 +869,17 @@ module DatapathPipelinedCache (
 		reg_s1_data: 0 ,
 		reg_s2_data: 0,
 		rd: 0
+      };
+	  end 
+	end else if(m_cache_miss_next || m_cache_miss_next_w) begin
+		begin
+		execute_state <= '{
+        pc:  x_pc_current,
+        insn: x_insn,
+        cycle_status: x_cycle_status,
+		reg_s1_data: x_rs1_data ,
+		reg_s2_data: x_rs2_data,
+		rd: x_insn_rd
       };
 	  end 
     end else if(xd_while_div_stall) begin
@@ -783,7 +898,7 @@ module DatapathPipelinedCache (
         execute_state <= '{
           pc: d_pc_current,
           insn: d_insn ,
-          cycle_status: ((x_branchinTime || x_jumpinTime)? CYCLE_TAKEN_BRANCH: decode_state.cycle_status),
+          cycle_status: ((x_branchinTime || x_jumpinTime)? CYCLE_TAKEN_BRANCH: d_cycle_status),
 		  reg_s1_data: d_rs1_data,
 		  reg_s2_data: d_rs2_data,
 		  rd: (x_branchinTime || x_jumpinTime)? 0 : d_reg_rd
@@ -792,9 +907,54 @@ module DatapathPipelinedCache (
     end
   end
   
-  //parse instruction
-  wire [`REG_SIZE] x_pc_current = execute_state.pc;
-  wire [`REG_SIZE] x_insn = execute_state.insn;
+  //parse instruction + bypass if data cache responds 
+  logic [`REG_SIZE] x_pc_current  ;
+  logic [`REG_SIZE] x_insn;
+  logic [`REG_SIZE] x_reg_s1_data; 
+  logic [`REG_SIZE] x_reg_s2_data ; 
+  logic [4:0] x_from_d_rd; 
+  cycle_status_e x_cycle_status; 
+  cycle_status_e x_cycle_status_prev; 
+  always_comb begin
+	x_cycle_status = execute_state.cycle_status;
+	x_pc_current = execute_state.pc ;
+    x_insn = execute_state.insn;
+	x_reg_s1_data = execute_state.reg_s1_data;
+	x_reg_s2_data = execute_state.reg_s2_data; 
+	x_from_d_rd = execute_state.rd; 
+	if(stall_break_cache_read || stall_break_cache_write) begin
+		if(fence_stall_prev || xd_while_div_stall_prev || xd_lw_dep_stall_prev ) begin
+			x_pc_current = 0;
+			x_insn = 0;
+			x_reg_s1_data = 0;
+			x_reg_s2_data = 0;
+			x_from_d_rd = 0; 
+			if(xd_while_div_stall_prev) begin
+				x_cycle_status = CYCLE_DIV; 
+			end
+			else begin
+				x_cycle_status = ( (fence_stall_prev)? CYCLE_FENCEI: CYCLE_LOAD2USE ); 
+			end
+		end
+		else begin
+			x_pc_current = d_prev_pc_current;
+			x_insn = d_to_x_prev_insn;
+			x_reg_s1_data = d_prev_rs1_data;
+			x_reg_s2_data = d_prev_rs2_data;
+			x_from_d_rd =( (x_prev_branchinTime || x_prev_jumpinTime) ? 0 : d_prev_reg_rd );
+			x_cycle_status = ((x_prev_branchinTime || x_prev_jumpinTime)? CYCLE_TAKEN_BRANCH: d_cycle_status_prev) ; 
+		end
+	end
+	else if(stall_break_cache_read_no_dep && wd_lw_dep_stall) begin
+		x_pc_current = 0;
+		x_insn = `NOP;
+		x_reg_s1_data = 0;
+		x_reg_s2_data = 0;
+		x_from_d_rd = 0 ;
+		x_cycle_status = CYCLE_LOAD2USE; 
+	end
+  end
+
   wire [6:0] x_insn_funct7 = x_insn[31:25];
   wire [2:0] x_insn_funct3 = x_insn[14:12];
   wire [4:0] x_insn_rd = x_insn[11:7];
@@ -896,14 +1056,14 @@ module DatapathPipelinedCache (
   wire wx_bypass_s1 = (w_insn_rd == x_insn_rs1)&&(|w_insn_rd) ;
   wire wx_bypass_s2 = (w_insn_rd == x_insn_rs2)&&(|w_insn_rd) ;
   
-  wire[`REG_SIZE] x_rs1_data_wx = (wx_bypass_s1) ? w_dataReg : execute_state.reg_s1_data;
-  wire[`REG_SIZE] x_rs2_data_wx = (wx_bypass_s2) ? w_dataReg : execute_state.reg_s2_data;
+  wire[`REG_SIZE] x_rs1_data_wx = (wx_bypass_s1) ? w_dataReg : x_reg_s1_data;
+  wire[`REG_SIZE] x_rs2_data_wx = (wx_bypass_s2) ? w_dataReg : x_reg_s2_data;
   
   //priority is given to mx bypass as its the most recent.
   wire[`REG_SIZE] x_rs1_data = (mx_bypass_s1) ? m_exe_out : x_rs1_data_wx;
   wire[`REG_SIZE] x_rs2_data = (mx_bypass_s2) ? m_exe_out : x_rs2_data_wx;
   
-  cycle_status_e x_cycle_status = execute_state.cycle_status;
+  
   
   wire [255:0] x_disasm;
   Disasm #(
@@ -917,7 +1077,12 @@ module DatapathPipelinedCache (
   logic [`REG_SIZE] x_a;
   logic [`REG_SIZE] x_b;
   logic x_cin;
-  //mathematic stuffs
+  cla mathematatics(
+    .a(x_a),
+    .b(x_b),
+    .cin(x_cin),
+    .sum(x_sum)
+  );
   logic x_i_insn_rem, x_i_insn_div, x_i_insn_remu, x_i_insn_divu ;
   logic x_i_rs1_N, x_i_rs2_N, x_i_div_by_zero;
   logic [4:0] x_i_div_rd;
@@ -949,8 +1114,8 @@ module DatapathPipelinedCache (
   logic [`REG_SIZE] x_rem_res,x_div_res;
 	
   wire x_div_stall = 1'b0;
+  DividerUnsignedPipelined div_inst(.i_dividend(x_dividend), .i_divisor(x_divisor), .o_remainder(x_remu_res), .o_quotient(x_quotient_res),.clk(clk),.rst(rst),.stall(x_div_stall));
   
-  // division stuffs
   logic x_illegal_insn;
   logic x_branchinTime;
   logic x_jumpinTime;
@@ -1002,12 +1167,12 @@ module DatapathPipelinedCache (
   logic x_to_m_divuse_cycle_stat ;
   cycle_status_e x_to_m_cycle_stat;
   always_comb begin
-	x_to_m_insn = execute_state.insn;
-	x_to_m_rd = execute_state.rd;
-	x_to_m_pc = execute_state.pc;
+	x_to_m_insn = x_insn;
+	x_to_m_rd = x_from_d_rd;
+	x_to_m_pc = x_pc_current;
 	x_to_m_rs2_data = x_rs2_data;
 	x_to_m_divuse_cycle_stat = 0;
-	x_to_m_cycle_stat = execute_state.cycle_status;
+	x_to_m_cycle_stat = x_cycle_status;
 	x_halt_next = 0;
 	x_out = 0;
 	x_illegal_insn = 1'b0;
@@ -1283,6 +1448,7 @@ module DatapathPipelinedCache (
 				x_out = x_pc_current + 4;
 				x_pc_next = (x_rs1_data+ x_imm_i_sext) & ~(32'h1);
 				x_jumpinTime = 1'b1;
+				
 			end
 		end
 		OpcodeJal : begin
@@ -1292,6 +1458,7 @@ module DatapathPipelinedCache (
 				x_out = x_pc_current + 4;
 				x_pc_next = x_pc_current + x_imm_j_sext;
 				x_jumpinTime = 1'b1;
+				
 			end
 		end
 		OpcodeLoad: begin
@@ -1459,10 +1626,90 @@ module DatapathPipelinedCache (
 		x_pc_next = f_pc_current; 
 	  end
 	  */
-	  
+	 
   
   end
- 
+   logic [`REG_SIZE] x_prev_to_m_insn;
+   logic [`ADDR_WIDTH-1:0] x_prev_to_m_pc;
+   logic [`REG_SIZE] x_prev_to_m_rs2_data; 
+   logic [`REG_SIZE] x_prev_out; 
+   logic x_prev_reg_write_en; 
+   logic x_prev_halt_next;
+   logic [1:0] x_prev_mem_or_alu; 
+   logic [4:0] x_prev_to_m_rd; 
+   logic x_prev_mem_is_lw; 
+   logic x_prev_mem_is_lh; 
+   logic x_prev_mem_is_lhu; 
+   logic x_prev_mem_is_lb ; 
+   logic x_prev_mem_is_lbu ;
+   logic x_prev_mem_is_sw ; 
+   logic x_prev_mem_is_sh ; 
+   logic x_prev_mem_is_sb;
+   logic x_prev_is_load ;
+   logic x_prev_is_store ; 
+   logic x_prev_branchinTime;
+   logic x_prev_jumpinTime;
+   logic [`REG_SIZE] x_pc_next_prev; //wire name is weird but we roll 
+   cycle_status_e x_to_m_cycle_stat_prev; 
+   logic x_to_m_divuse_cycle_stat_prev ; 
+   
+   
+   //keep track of previous information held in x stage to bypass it when cache responds with data 
+   always_ff @(posedge clk) begin
+	if(rst) begin
+		x_prev_to_m_insn <= 0;
+        x_prev_to_m_insn <=0 ;
+        x_prev_to_m_rs2_data <=0; 
+        x_prev_out <=0; 
+		x_prev_reg_write_en <=0; 
+        x_prev_halt_next <=0;
+        x_prev_mem_or_alu <=0; 
+        x_prev_to_m_rd <=0; 
+        x_prev_mem_is_lw <=0; 
+        x_prev_mem_is_lh <=0; 
+        x_prev_mem_is_lhu <=0; 
+        x_prev_mem_is_lb <=0 ; 
+        x_prev_mem_is_lbu <=0;
+        x_prev_mem_is_sw <=0; 
+        x_prev_mem_is_sh <=0; 
+        x_prev_mem_is_sb <=0;
+        x_prev_is_load <=0;
+        x_prev_is_store <=0; 
+		x_pc_next_prev <=0 ; 
+		x_prev_branchinTime <=0;
+		x_prev_jumpinTime <=0;
+		x_cycle_status_prev <= CYCLE_RESET; 
+		x_to_m_cycle_stat_prev <= CYCLE_RESET; 
+		x_to_m_divuse_cycle_stat_prev <= 0; 
+		
+	end
+	else begin
+		x_prev_to_m_insn <= x_to_m_insn;
+        x_prev_to_m_pc <= x_to_m_pc ;
+        x_prev_to_m_rs2_data <= x_to_m_rs2_data; 
+        x_prev_out <= x_out; 
+		x_prev_reg_write_en <= x_reg_write_en; 
+        x_prev_halt_next <= x_halt_next;
+        x_prev_mem_or_alu <= x_mem_or_alu; 
+        x_prev_to_m_rd <= x_to_m_rd; 
+        x_prev_mem_is_lw <= x_mem_is_lw; 
+        x_prev_mem_is_lh <= x_mem_is_lh; 
+        x_prev_mem_is_lhu <= x_mem_is_lhu; 
+        x_prev_mem_is_lb <= x_mem_is_lb; 
+        x_prev_mem_is_lbu <= x_mem_is_lbu;
+        x_prev_mem_is_sw <= x_mem_is_sw; 
+        x_prev_mem_is_sh <= x_mem_is_sh; 
+        x_prev_mem_is_sb <= x_mem_is_sb;
+        x_prev_is_load <= x_is_load;
+        x_prev_is_store <= x_is_store; 
+		x_pc_next_prev <= x_pc_next; 
+		x_prev_branchinTime <= x_branchinTime;
+		x_prev_jumpinTime <= x_jumpinTime;
+		x_cycle_status_prev <= x_cycle_status; 
+		x_to_m_cycle_stat_prev <= x_to_m_cycle_stat;
+		x_to_m_divuse_cycle_stat_prev <= x_to_m_divuse_cycle_stat ; 
+	end
+   end
   
   
   
@@ -1473,202 +1720,360 @@ module DatapathPipelinedCache (
   always_ff @(posedge clk) begin
     if (rst) begin
       memory_state <= '{
-        pc:0,
+		pc:0,
         insn: 0,
         cycle_status: CYCLE_RESET,
-        reg_s2_data: 0,
-        exe_out: x_out,
-        reg_write_en:0,
-        halt:0,
-        mem_or_alu: 0,
-        rd :0,
-        mem_is_lw:0,
-        mem_is_lh:0,
+		reg_s2_data: 0,
+		exe_out: x_out,
+		reg_write_en:0,
+		halt:0,
+		mem_or_alu: 0,
+		rd :0,
+		mem_is_lw:0,
+		mem_is_lh:0,
         mem_is_lhu:0,
         mem_is_lb:0,
         mem_is_lbu:0,
+  
         mem_is_sw:0,
         mem_is_sh:0,
         mem_is_sb:0,
+  
         is_load:0,
         is_store:0
       };
-      // init axil babyyy
-      dcache.RREADY <= 1;
-      dcache.BREADY <= 1;
+    end else if(m_cache_miss_next || m_cache_miss_next_w) begin
+      begin
+        memory_state <= '{
+		  pc: 0,
+          insn: 0,
+		  cycle_status:CYCLE_DCACHE_MISS,
+		  reg_s2_data: 0,
+		  exe_out:0, //
+		  reg_write_en: 0, //
+		  halt: 0, //
+		  mem_or_alu: 0, //
+		  rd: 0, //
+		  mem_is_lw: 0, //
+		  mem_is_lh: 0, //
+          mem_is_lhu: 0, //
+          mem_is_lb: 0, //
+          mem_is_lbu: 0, //
+          mem_is_sw: 0, //
+          mem_is_sh:0, //
+          mem_is_sb: 0, //
+  
+          is_load: 0, //
+          is_store: 0 //
+		 
+        };
+      end
     end else begin
-      memory_state <= '{
-        pc: x_to_m_pc,
-        insn: x_to_m_insn,
-        cycle_status:( (x_to_m_divuse_cycle_stat) ? CYCLE_DIV : x_to_m_cycle_stat),
-        reg_s2_data: x_to_m_rs2_data,
-        exe_out:x_out,
-        reg_write_en: x_reg_write_en,
-        halt: x_halt_next,
-        mem_or_alu: x_mem_or_alu,
-        rd: x_to_m_rd,
-        mem_is_lw: x_mem_is_lw,
-        mem_is_lh: x_mem_is_lh,
-        mem_is_lhu: x_mem_is_lhu,
-        mem_is_lb: x_mem_is_lb,
-        mem_is_lbu: x_mem_is_lbu,
-        mem_is_sw: x_mem_is_sw,
-        mem_is_sh: x_mem_is_sh,
-        mem_is_sb: x_mem_is_sb,
-        is_load: x_is_load,
-        is_store: x_is_store
-      };
+      begin
+        memory_state <= '{
+		  pc: x_to_m_pc,
+          insn: x_to_m_insn,
+		  cycle_status:( (x_to_m_divuse_cycle_stat) ? CYCLE_DIV : x_to_m_cycle_stat),
+		  reg_s2_data: x_to_m_rs2_data,
+		  exe_out:x_out, //
+		  reg_write_en: x_reg_write_en, //
+		  halt: x_halt_next, //
+		  mem_or_alu: x_mem_or_alu, //
+		  rd: x_to_m_rd, //
+		  mem_is_lw: x_mem_is_lw, //
+		  mem_is_lh: x_mem_is_lh, //
+          mem_is_lhu: x_mem_is_lhu, //
+          mem_is_lb: x_mem_is_lb, //
+          mem_is_lbu: x_mem_is_lbu, //
+          mem_is_sw: x_mem_is_sw, //
+          mem_is_sh: x_mem_is_sh, //
+          mem_is_sb: x_mem_is_sb, //
+  
+          is_load: x_is_load, //
+          is_store: x_is_store //
+		 
+        };
+      end
     end
   end
   
-  // Memory stage signals
-  wire [`INSN_SIZE] m_insn = memory_state.insn;
-  wire [`REG_SIZE] m_pc = memory_state.pc;
-  wire[4:0] m_insn_rs2 = m_insn[24:20];
-  wire[4:0] m_insn_rd = memory_state.rd;
-  cycle_status_e m_cycle_status = memory_state.cycle_status;
-  wire [`REG_SIZE] m_reg_s2_data = memory_state.reg_s2_data;
-  wire[`REG_SIZE] m_exe_out = memory_state.exe_out;
-  wire m_is_load = memory_state.is_load;
-  wire m_is_store = memory_state.is_store;
-  
-  // Load/store type signals
-  wire m_insn_lw = memory_state.mem_is_lw;
-  wire m_insn_lhu = memory_state.mem_is_lhu;
-  wire m_insn_lh = memory_state.mem_is_lh;
-  wire m_insn_lbu = memory_state.mem_is_lbu;
-  wire m_insn_lb = memory_state.mem_is_lb;
-  wire m_insn_sw = memory_state.mem_is_sw;
-  wire m_insn_sh = memory_state.mem_is_sh;
-  wire m_insn_sb = memory_state.mem_is_sb;
-  
-  //WM bypass
-  wire wm_bypass = (m_is_store) && (m_insn_rs2 == w_insn_rd) && (|w_insn_rd);
-  wire[`REG_SIZE] m_rs2_data = (wm_bypass)? w_dataReg: memory_state.reg_s2_data;
-  
-  logic m_illegal_insn;
-  logic [`REG_SIZE] m_mem_data;
-  logic m_reg_write_en;
-  
-  // AXI-Lite memory interface
+  //:)
+  cycle_status_e m_cycle_status; 
   always_comb begin
-    m_illegal_insn = 1'b0;
-    m_mem_data = 0;
-    m_reg_write_en = memory_state.reg_write_en;
-    
-    // default signals
-    dcache.ARVALID = 0;
-    dcache.ARADDR = 0;
-    dcache.AWVALID = 0;
-    dcache.AWADDR = 0;
-    dcache.WVALID = 0;
-    dcache.WDATA = 0;
-    dcache.WSTRB = 4'h0;
-  
-    if (m_is_load) begin
-      // Set read address channel signals
-      dcache.ARVALID = 1;
-      dcache.ARADDR = m_exe_out;
-  
-      if(m_insn_lw) begin
-        if(&(~m_exe_out[1:0])) begin
-          m_mem_data = dcache.RDATA;
-        end else begin
-          m_reg_write_en = 1'b0;
-          m_illegal_insn = 1'b1;
-        end
-      end
-      else if(m_insn_lb || m_insn_lbu) begin
-        dcache.ARADDR = m_exe_out & 32'hffff_fffc;
-        case (m_exe_out[1:0])
-          2'b00: m_mem_data = (m_insn_lb) ? {{24{dcache.RDATA[7]}}, dcache.RDATA[7:0]} : 
-                                           {{24{1'b0}}, dcache.RDATA[7:0]};
-          2'b01: m_mem_data = (m_insn_lb) ? {{24{dcache.RDATA[15]}}, dcache.RDATA[15:8]} : 
-                                           {{24{1'b0}}, dcache.RDATA[15:8]};
-          2'b10: m_mem_data = (m_insn_lb) ? {{24{dcache.RDATA[23]}}, dcache.RDATA[23:16]} : 
-                                           {{24{1'b0}}, dcache.RDATA[23:16]};
-          2'b11: m_mem_data = (m_insn_lb) ? {{24{dcache.RDATA[31]}}, dcache.RDATA[31:24]} : 
-                                           {{24{1'b0}}, dcache.RDATA[31:24]};
-        endcase
-      end
-      else if(m_insn_lh || m_insn_lhu) begin
-        dcache.ARADDR = m_exe_out & 32'hffff_fffc;
-        case (m_exe_out[1:0])
-          2'b00: m_mem_data = (m_insn_lh) ? {{16{dcache.RDATA[15]}}, dcache.RDATA[15:0]} : 
-                                           {{16{1'b0}}, dcache.RDATA[15:0]};
-          2'b01: m_mem_data = (m_insn_lh) ? {{16{dcache.RDATA[23]}}, dcache.RDATA[23:8]} : 
-                                           {{16{1'b0}}, dcache.RDATA[23:8]};
-          2'b10: m_mem_data = (m_insn_lh) ? {{16{dcache.RDATA[31]}}, dcache.RDATA[31:16]} : 
-                                           {{16{1'b0}}, dcache.RDATA[31:16]};
-          2'b11: begin
-            m_reg_write_en = 1'b0;
-            m_illegal_insn = 1'b1;
-          end
-        endcase
-      end
-    end
-    else if(m_is_store) begin
-      // Set write address channel signals
-      dcache.AWVALID = 1;
-      dcache.WVALID = 1;
-      
-      if(m_insn_sw) begin
-        if(&(~m_exe_out[1:0])) begin
-          dcache.AWADDR = m_exe_out;
-          dcache.WDATA = m_rs2_data;
-          dcache.WSTRB = 4'hf;
-        end else begin
-          m_illegal_insn = 1'b1;
-        end
-      end
-      else if(m_insn_sh) begin
-        dcache.AWADDR = m_exe_out & 32'hffff_fffc;
-        case (m_exe_out[1:0])
-          2'b00: begin
-            dcache.WSTRB = 4'h3;
-            dcache.WDATA = m_rs2_data;
-          end
-          2'b01: begin
-            dcache.WSTRB = 4'h6;
-            dcache.WDATA = {m_rs2_data[23:0], 8'b0};
-          end
-          2'b10: begin
-            dcache.WSTRB = 4'hc;
-            dcache.WDATA = {m_rs2_data[15:0], 16'b0};
-          end
-          2'b11: begin
-            m_illegal_insn = 1'b1;
-          end
-        endcase
-      end
-      else if(m_insn_sb) begin
-        dcache.AWADDR = m_exe_out & 32'hffff_fffc;
-        case (m_exe_out[1:0])
-          2'b00: begin
-            dcache.WSTRB = 4'h1;
-            dcache.WDATA = m_rs2_data;
-          end
-          2'b01: begin
-            dcache.WSTRB = 4'h2;
-            dcache.WDATA = {m_rs2_data[23:0], 8'b0};
-          end
-          2'b10: begin
-            dcache.WSTRB = 4'h4;
-            dcache.WDATA = {m_rs2_data[15:0], 16'b0};
-          end
-          2'b11: begin
-            dcache.WSTRB = 4'h8;
-            dcache.WDATA = {m_rs2_data[7:0], 24'b0};
-          end
-        endcase
-      end
-    end
+	m_cycle_status = memory_state.cycle_status; 
+	if(stall_break_cache_read_no_dep || stall_break_cache_write || (m_cache_miss_current && dcache.RVALID)) begin
+		m_cycle_status = ( (x_to_m_divuse_cycle_stat_prev) ? CYCLE_DIV : x_to_m_cycle_stat_prev); 
+	end
+	
   end
+  assign dcache.RREADY = 1;
+  wire [`INSN_SIZE] m_insn = ((stall_break_cache_read_no_dep || stall_break_cache_write) ? x_prev_to_m_insn: memory_state.insn);
+  wire [`REG_SIZE] m_pc = ((stall_break_cache_read_no_dep || stall_break_cache_write) ? x_prev_to_m_pc: memory_state.pc) ;
+  wire[4:0] m_insn_rs2 = m_insn[24:20];
+  wire [6:0] m_insn_opcode = m_insn[6:0]; 
+  
+  wire[4:0] m_insn_rd = ((stall_break_cache_read_no_dep || stall_break_cache_write) ? x_prev_to_m_rd : memory_state.rd);
   
   
-   /****************/
-  /* WRITEBACK STAGE */
-  /****************/
+  wire [255:0] m_disasm;
+  Disasm #(
+      .PREFIX("m")
+  ) disasm_3memory (
+      .insn  (m_insn),
+      .disasm(m_disasm)
+  );
+  // bypass instruction when cache responds 
+  
+  wire [`REG_SIZE] m_reg_s2_data = ((stall_break_cache_read_no_dep || stall_break_cache_write) ? x_prev_to_m_rs2_data:memory_state.reg_s2_data) ;
+  wire[`REG_SIZE] m_exe_out = ((stall_break_cache_read_no_dep || stall_break_cache_write) ?  x_prev_out :memory_state.exe_out) ;
+  
+  
+  wire m_is_load = ((stall_break_cache_read_no_dep || stall_break_cache_write) ? x_prev_is_load : memory_state.is_load);
+  wire m_is_store = ((stall_break_cache_read_no_dep || stall_break_cache_write) ? x_prev_is_store : memory_state.is_store);
+  
+  
+  
+  wire m_insn_lw  = ((stall_break_cache_read_no_dep || stall_break_cache_write) ? x_prev_mem_is_lw : memory_state.mem_is_lw);
+  wire m_insn_lhu = ((stall_break_cache_read_no_dep || stall_break_cache_write) ? x_prev_mem_is_lhu :memory_state.mem_is_lhu);
+  wire m_insn_lh  = ((stall_break_cache_read_no_dep || stall_break_cache_write) ? x_prev_mem_is_lh :memory_state.mem_is_lh);
+  wire m_insn_lbu = ((stall_break_cache_read_no_dep || stall_break_cache_write) ? x_prev_mem_is_lbu :memory_state.mem_is_lbu);
+  wire m_insn_lb  = ((stall_break_cache_read_no_dep || stall_break_cache_write) ? x_prev_mem_is_lb: memory_state.mem_is_lb);
+  
+  wire m_insn_sw = ((stall_break_cache_read_no_dep || stall_break_cache_write) ? x_prev_mem_is_sw : memory_state.mem_is_sw);
+  wire m_insn_sh = ((stall_break_cache_read_no_dep || stall_break_cache_write) ? x_prev_mem_is_sh :memory_state.mem_is_sh);
+  wire m_insn_sb = ((stall_break_cache_read_no_dep || stall_break_cache_write) ? x_prev_mem_is_sb: memory_state.mem_is_sb );
+  wire [1:0] m_mem_or_alu = ((stall_break_cache_read_no_dep || stall_break_cache_write) ? x_prev_mem_or_alu : memory_state.mem_or_alu );
+  
+ 
+  //WM bypass:
+  
+  wire wm_bypass = (m_is_store) && (m_insn_rs2 == w_insn_rd) && (|w_insn_rd) ;  
+  
+  wire[`REG_SIZE] m_rs2_data = (wm_bypass)? w_dataReg:  m_reg_s2_data;
+  
+	
+	logic m_illegal_insn;
+	logic [`REG_SIZE] m_mem_data ;
+	logic m_reg_write_en; 
+	
+	//handle stalling while cache read miss
+	logic m_cache_miss_current;
+	logic m_cache_miss_next; 
+	
+	//handle stalling while cache write miss
+	logic m_cache_miss_current_w;
+	logic m_cache_miss_next_w; 
+	//logic m_mem_data_valid; 
+	
+	logic [`ADDR_WIDTH-1:0] m_to_w_insn_pending ; //pending load instruction waiting for cache to send data 
+	logic [`ADDR_WIDTH-1:0] m_to_w_pc_pending ; //pending load pc instruction waiting for cache to send data
+	logic m_is_lw_pending ; 
+	logic m_is_lh_pending ; 
+	logic m_is_lhu_pending;
+	logic m_is_lb_pending;
+	logic m_is_lbu_pending;
+	logic [1:0] m_addr_offset_pending;
+	
+	
+	logic [`ADDR_WIDTH-1:0] m_to_w_insn ;
+	
+	logic [`ADDR_WIDTH-1:0] m_to_w_insn_pending_w ; //pending load instruction waiting for cache to send data during cache write 
+	logic [`ADDR_WIDTH-1:0] m_to_w_pc_pending_w ; //pending load pc instruction waiting for cache to send data during cache write 
+	
+	always_comb begin
+		m_illegal_insn = 1'b0;
+		
+		m_mem_data = 0;
+		//m_mem_data_valid = 0;
+		m_reg_write_en =  ((stall_break_cache_read_no_dep || stall_break_cache_write) ? x_prev_reg_write_en :memory_state.reg_write_en );
+		
+		
+		m_to_w_insn = m_insn;
+		if (m_is_load) begin
+		
+			if(m_insn_lw ) begin
+				if((m_exe_out[0] | m_exe_out[1])) begin
+					m_illegal_insn = 1'b1;
+				end
+				else if(!m_cache_miss_current)begin
+					m_reg_write_en = 0; 
+					m_to_w_insn = `NOP;
+				end
+				
+			end
+			else if(m_insn_lb || m_insn_lbu) begin
+				if(!m_cache_miss_current)begin
+					m_reg_write_en = 0; 
+					m_to_w_insn = `NOP;
+				end
+			end
+			else if(m_insn_lh || m_insn_lhu) begin
+				if((m_exe_out[0] & m_exe_out[1] )) begin
+					m_illegal_insn = 1'b1;
+				end
+				else if(!m_cache_miss_current)begin
+					m_reg_write_en = 0; 
+					m_to_w_insn = `NOP;
+				end
+			end
+			else begin
+				m_reg_write_en = 1'b0;
+				m_illegal_insn = 1'b1;
+			end
+			
+		end
+		else if(m_is_store) begin
+			
+			if(m_insn_sw) begin
+				if(!m_cache_miss_current_w)begin
+					if((~m_exe_out[1]) & (~m_exe_out[0])) begin
+						m_reg_write_en = 0; 
+						m_to_w_insn = `NOP;
+					end
+					else begin
+						m_illegal_insn = 1'b1;
+					end
+				end
+			end
+			else if(m_insn_sh) begin
+				if(!m_cache_miss_current_w)begin
+					if(!(m_exe_out[1] & m_exe_out[0])) begin
+						m_reg_write_en = 0; 
+						m_to_w_insn = `NOP;
+					end
+					else begin
+						m_illegal_insn = 1'b1;
+					end
+				end
+			end
+			else if(m_insn_sb) begin
+				if(!m_cache_miss_current_w)begin
+					m_reg_write_en = 0; 
+					m_to_w_insn = `NOP;
+				end
+			end
+			else begin
+				m_illegal_insn = 1'b1;
+			end
+			
+			/*
+			else if(m_insn_sh) begin
+				addr_to_dmem = (m_exe_out)&(32'hffff_fffc);
+				case (m_exe_out[1:0])
+					2'b00: begin
+						store_we_to_dmem = 4'h3;
+						store_data_to_dmem =m_rs2_data;
+					end
+					2'b01: begin 
+						store_we_to_dmem = 4'h6;
+						store_data_to_dmem = {m_rs2_data[23:0],{8{1'b0}}};
+					end
+					2'b10: begin 
+						store_we_to_dmem = 4'hc;
+						store_data_to_dmem = {m_rs2_data[15:0],{16{1'b0}}};
+					end
+					2'b11: begin 
+						
+						store_we_to_dmem = 4'h0;
+						store_data_to_dmem = 0;
+						
+						m_illegal_insn = 1'b1;
+						store_data_to_dmem = 0;
+						store_we_to_dmem = 4'h0;
+					end
+				endcase
+			end
+			else if(m_insn_sb) begin
+				addr_to_dmem = (m_exe_out)&(32'hffff_fffc);
+				case (m_exe_out[1:0])
+					2'b00: begin
+						store_we_to_dmem = 4'h1;
+						store_data_to_dmem = m_rs2_data;
+					end
+					2'b01: begin 
+						store_we_to_dmem = 4'h2;
+						store_data_to_dmem = {m_rs2_data[23:0],{8{1'b0}}};
+					end
+					2'b10: begin 
+						store_we_to_dmem = 4'h4;
+						store_data_to_dmem = {m_rs2_data[15:0],{16{1'b0}}};
+					end
+					2'b11: begin 
+						store_we_to_dmem = 4'h8;
+						store_data_to_dmem = {m_rs2_data[7:0],{24{1'b0}}};
+					end
+				endcase	
+			end
+			else begin
+				m_illegal_insn = 1'b1;
+			end
+			*/
+		end
+		
+	end
+	always_ff @(posedge clk) begin  // update cache miss state 
+		if(rst) begin
+			m_cache_miss_current <= 0;
+			m_cache_miss_current_w <=0; 
+			
+		end 
+		else begin
+			m_cache_miss_current <= m_cache_miss_next; 
+			m_cache_miss_current_w <= m_cache_miss_next_w;
+		end
+	end 
+	always_ff @(posedge clk) begin
+		if(rst) begin
+			m_to_w_insn_pending <=0;
+			m_to_w_pc_pending <=0;
+			m_to_w_insn_pending_w <=0;
+			m_to_w_pc_pending_w <=0;
+			
+			m_is_lw_pending <=0;
+			m_is_lh_pending <=0;
+			m_is_lhu_pending <=0;
+			m_is_lb_pending <=0;
+			m_is_lbu_pending <=0; 
+			m_addr_offset_pending <=0;
+		end
+		else if(m_is_load && !m_illegal_insn) begin
+			m_to_w_insn_pending <= m_insn;
+			m_to_w_pc_pending <= m_pc;
+			m_is_lw_pending <= m_insn_lw;
+			m_is_lh_pending <= m_insn_lh;
+			m_is_lhu_pending <= m_insn_lhu;
+			m_is_lb_pending <= m_insn_lb;
+			m_is_lbu_pending <= m_insn_lbu;
+			m_addr_offset_pending <= m_exe_out[1:0]; 
+			
+			
+		end
+		else if(m_is_store && !m_illegal_insn) begin
+			m_to_w_insn_pending_w <= m_insn;
+			m_to_w_pc_pending_w <= m_pc;
+		end
+		else if(m_cache_miss_current && dcache.RVALID) begin
+			m_to_w_insn_pending <=0;
+			
+			m_to_w_pc_pending <=0;
+			m_addr_offset_pending <=0;
+			m_is_lw_pending <=0;
+			m_is_lh_pending <=0;
+			m_is_lhu_pending <=0;
+			m_is_lb_pending <=0;
+			m_is_lbu_pending <=0; 
+			m_addr_offset_pending <=0;
+			
+		end
+		else if(m_cache_miss_current_w && dcache.BVALID) begin
+			m_to_w_insn_pending_w <=0;
+			m_to_w_pc_pending_w <=0;
+		end
+	end
+	assign dcache.BREADY = 1'b1;
+  /******************************/
+  /* WRITEBACK/CACHE MISS STAGE */
+  /******************************/
   stage_writeback_t writeback_state;
   always_ff @(posedge clk) begin
     if (rst) begin
@@ -1683,55 +2088,228 @@ module DatapathPipelinedCache (
 		halt:0,
 		mem_or_alu:0,
 		rd: 0
+		//mem_data_valid : 0
 		
       };
     end else begin
       begin
         writeback_state <= '{
 		  pc: m_pc,
-          insn: m_insn,
-		  cycle_status: memory_state.cycle_status,
+          insn: m_to_w_insn,
+		  cycle_status: m_cycle_status,
 		  exe_out:m_exe_out,
 		  mem_out: m_mem_data,
 		  reg_write_en: m_reg_write_en,
 		  halt: memory_state.halt,
-		  mem_or_alu: memory_state.mem_or_alu,
-		  rd: memory_state.rd
+		  mem_or_alu: m_mem_or_alu,
+		  rd: m_insn_rd
+		  //mem_data_valid : m_mem_data_valid
         };
       end
     end
   end
   
-  //register write stuffs to be modified in writeback stage
-  wire [`INSN_SIZE] w_insn = writeback_state.insn;
-  wire [`OPCODE_SIZE] w_insn_opcode = w_insn[6:0];
-  wire[4:0] w_insn_rd = writeback_state.rd;
+ 
+ 
   
+  logic [`INSN_SIZE] w_insn ;
+  logic [`OPCODE_SIZE] w_insn_opcode ;
+  logic [4:0] w_insn_rd ;
+  logic [1:0] w_mem_or_alu ;
+  logic [`REG_SIZE] w_alu_out;
+  logic [`REG_SIZE] w_mem_out;
+  logic [`REG_SIZE] w_pc; 
+  logic w_regwe;
+  cycle_status_e w_cycle_status;
+  always_comb begin // cache miss stages
+	   w_cycle_status = writeback_state.cycle_status ; 
+	   w_mem_out = writeback_state.mem_out;
+	   w_regwe = writeback_state.reg_write_en;
+	   w_alu_out = writeback_state.exe_out;
+	   w_insn = writeback_state.insn;
+	   w_insn_rd = writeback_state.rd;
+	   w_insn_opcode = w_insn[6:0]; 
+	   w_mem_or_alu = writeback_state.mem_or_alu;
+	   m_cache_miss_next = 0; 
+	   m_cache_miss_next_w = 0; 
+	   w_pc =  writeback_state.pc;
+		
+		dcache.ARADDR = 0;
+		dcache.ARVALID = 1'b0;
+		
+		dcache.AWVALID = 1'b0;
+		dcache.AWADDR = 0; 
+		
+		dcache.WVALID = 0;
+		dcache.WSTRB = 0;
+		dcache.WDATA = 0; 
+		
+		if (m_is_load) begin
+			dcache.ARADDR = (m_exe_out)&(32'hffff_fffc);
+			dcache.ARVALID = 1'b1;
+			m_cache_miss_next = 1'b1;	
+	   end
+	   else if(m_is_store) begin
+			if(m_insn_sw) begin
+				if(~m_exe_out[0] & ~m_exe_out[1]) begin
+					dcache.AWADDR = m_exe_out;
+					dcache.AWVALID = 1'b1;
+					m_cache_miss_next_w = 1'b1;	
+					dcache.WVALID = 1'b1;
+					dcache.WSTRB = 4'hf;
+					dcache.WDATA =  m_rs2_data;
+				end
+				
+		   end
+		   else if(m_insn_sb) begin
+				dcache.AWVALID = 1'b1;
+				dcache.AWADDR = (m_exe_out)&(32'hffff_fffc);
+				dcache.WVALID = 1'b1;
+				m_cache_miss_next_w = 1'b1;	
+				case (m_exe_out[1:0])
+					2'b00: begin
+						dcache.WSTRB = 4'h1;
+						dcache.WDATA = m_rs2_data;
+					end
+					2'b01: begin 
+						dcache.WSTRB = 4'h2;
+						dcache.WDATA = {m_rs2_data[23:0],{8{1'b0}}};
+					end
+					2'b10: begin 
+						dcache.WSTRB = 4'h4;
+						dcache.WDATA = {m_rs2_data[15:0],{16{1'b0}}};
+					end
+					2'b11: begin 
+						dcache.WSTRB = 4'h8;
+						dcache.WDATA = {m_rs2_data[7:0],{24{1'b0}}};
+					end
+				endcase			
+		   end
+		   else if(m_insn_sh) begin
+				dcache.AWVALID = 1'b1;
+				dcache.AWADDR = (m_exe_out)&(32'hffff_fffc);
+				dcache.WVALID = 1'b1;
+				m_cache_miss_next_w = 1'b1;	
+				case (m_exe_out[1:0])
+					2'b00: begin
+						dcache.WSTRB = 4'h3;
+						dcache.WDATA = m_rs2_data;
+					end
+					2'b01: begin 
+						dcache.WSTRB = 4'h6;
+						dcache.WDATA = {m_rs2_data[23:0],{8{1'b0}}};
+					end
+					2'b10: begin 
+						dcache.WSTRB = 4'hc;
+						dcache.WDATA = {m_rs2_data[15:0],{16{1'b0}}};
+					end
+					2'b11: begin 
+						dcache.AWVALID = 1'b0;
+						dcache.WVALID = 1'b0;
+						m_cache_miss_next_w = 1'b0;	
+					end
+				endcase
+			end
+			
+	   end
+	   if(m_cache_miss_current) begin
+			w_regwe = 1;
+			w_insn = m_to_w_insn_pending;
+			w_alu_out = 0;
+			w_insn_rd = w_insn[11:7];
+			w_insn_opcode = w_insn[6:0];
+			w_mem_or_alu = 2'b11;
+			w_pc = m_to_w_pc_pending; 
+			w_cycle_status = CYCLE_NO_STALL;
+			if(dcache.RVALID) begin
+				if(m_is_lw_pending) begin
+					w_mem_out = dcache.RDATA;
+				end
+				else if(m_is_lb_pending || m_is_lbu_pending) begin
+					case (m_addr_offset_pending)
+						2'b00: w_mem_out = (m_is_lb_pending) ? {{24{dcache.RDATA[7]}},dcache.RDATA[7:0]} : {{24{1'b0}},dcache.RDATA[7:0]};
+						2'b01: w_mem_out = (m_is_lb_pending) ?{{24{dcache.RDATA[15]}},dcache.RDATA[15:8]}: {{24{1'b0}},dcache.RDATA[15:8]};
+						2'b10: w_mem_out = (m_is_lb_pending) ?{{24{dcache.RDATA[23]}},dcache.RDATA[23:16]}: {{24{1'b0}},dcache.RDATA[23:16]};
+						2'b11: w_mem_out = (m_is_lb_pending) ?{{24{dcache.RDATA[31]}},dcache.RDATA[31:24]}: {{24{1'b0}},dcache.RDATA[31:24]};
+					endcase 
+				end
+				else if(m_is_lh_pending || m_is_lhu_pending) begin
+					case (m_addr_offset_pending)
+						2'b00: w_mem_out = (m_is_lh_pending) ? {{16{dcache.RDATA[15]}},dcache.RDATA[15:0]} : {{16{1'b0}},dcache.RDATA[15:0]};
+						2'b01: w_mem_out = (m_is_lh_pending) ? {{16{dcache.RDATA[23]}},dcache.RDATA[23:8]} : {{16{1'b0}},dcache.RDATA[23:8]};
+						2'b10: w_mem_out = (m_is_lh_pending) ?{{16{dcache.RDATA[31]}},dcache.RDATA[31:16]}: {{16{1'b0}},dcache.RDATA[31:16]};
+						2'b11: begin
+							w_regwe = 0; 
+						end
+					endcase 
+				end
+				else begin
+					w_regwe = 0; 
+				end
+				//m_mem_data_valid = 1'b1;
+	 
+				if(!m_is_load) begin
+					m_cache_miss_next = 1'b0;
+				end
+				
+			end
+			else begin
+				m_cache_miss_next = 1'b1; 
+				w_regwe = 0;
+				w_insn = `NOP;
+				w_alu_out = 0;
+				w_insn_rd = 0;
+				w_insn_opcode = 0;
+				w_mem_or_alu = 0;
+				w_pc = 0;
+				w_cycle_status = CYCLE_DCACHE_MISS; 
+			end
+		end
+		if(m_cache_miss_current_w) begin
+			if(dcache.BVALID) begin
+				//m_mem_data_valid = 1'b1;
+				w_regwe = 0;
+				w_insn = m_to_w_insn_pending_w;
+				w_alu_out = 0;
+				w_insn_rd = w_insn[11:7];
+				w_insn_opcode = w_insn[6:0];
+				w_mem_or_alu = 0;
+				w_pc = m_to_w_pc_pending_w; 
+				w_cycle_status = CYCLE_NO_STALL; 
+				if(!m_is_store) begin
+					m_cache_miss_next_w = 1'b0;
+				end
+			end
+			else begin
+				m_cache_miss_next_w = 1'b1; 
+				w_regwe = 0;
+				w_insn = `NOP;
+				w_alu_out = 0;
+				w_insn_rd = 0;
+				w_insn_opcode = 0;
+				w_mem_or_alu = 0;
+				w_pc = 0;
+				w_cycle_status = CYCLE_DCACHE_MISS; 
+			end
+		end
+   end
+   
   wire [255:0] w_disasm;
   Disasm #(
-      .PREFIX("x")
+      .PREFIX("w")
   ) disasm_4writeback (
       .insn  (w_insn),
       .disasm(w_disasm)
   );
-  
-  wire[1:0] w_mem_or_alu = writeback_state.mem_or_alu;
-  
-  
-  wire [`REG_SIZE] w_alu_out = writeback_state.exe_out;
-  wire[`REG_SIZE] w_mem_out = writeback_state.mem_out;
-  
   wire[`REG_SIZE] w_datareg_mem_or_alu = (w_mem_or_alu[0])? w_mem_out : w_alu_out;
-  wire w_regwe = writeback_state.reg_write_en;
+ 
   wire[`REG_SIZE] w_dataReg = (w_mem_or_alu[1])? w_datareg_mem_or_alu :0;
   assign halt = writeback_state.halt;
   
   
-  assign trace_writeback_pc = writeback_state.pc;
+  assign trace_writeback_pc = w_pc;
   assign trace_writeback_insn = w_insn;
-  assign trace_writeback_cycle_status = writeback_state.cycle_status;
-
-  
+  assign trace_writeback_cycle_status = w_cycle_status;
 
 endmodule // DatapathPipelinedCache
 
@@ -1802,3 +2380,6 @@ AxilMemory #(.NUM_WORDS(8192)) memory (
   );
 
 endmodule
+
+
+
