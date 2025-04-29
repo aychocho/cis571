@@ -605,6 +605,7 @@ module DatapathPipelinedCache (
  
   
   assign icache.ARADDR = f_pc_current;
+  logic [`ADDR_WIDTH-1: 0] f_pc_prev;
   always_comb begin //update icache.ARVALID + bypass pc value when cache responds 
 	icache.ARVALID = next_icache_ARVALID;
 	f_pc_current = next_f_pc_current; 
@@ -614,8 +615,14 @@ module DatapathPipelinedCache (
 	end
 	else if(stall_break_cache_read || stall_break_cache_write) begin
 		//icache.ARVALID = ((x_prev_jumpinTime || x_prev_branchinTime)? 1'b0 : 1'b1);
-		icache.ARVALID = 1'b1;
-		f_pc_current = x_pc_next_prev; 
+		if(xd_lw_dep_stall_prev || fence_stall_prev || xd_while_div_stall_prev) begin
+			icache.ARVALID = 1'b0;
+			f_pc_current = f_pc_prev; 
+		end
+		else begin
+			icache.ARVALID = 1'b1;
+			f_pc_current = x_pc_next_prev; 
+		end
 	end
 	if( (x_branchinTime || x_jumpinTime )) begin
 		icache.ARVALID = 0; 
@@ -630,9 +637,11 @@ module DatapathPipelinedCache (
   always_ff @(posedge clk) begin
 	if(rst) begin
 		f_to_d_pc_prev <=0;
+		f_pc_prev <= 0;
 	end
 	else begin
 		f_to_d_pc_prev <= f_to_d_pc ; 
+		f_pc_prev <= f_pc_current; 
 	end
   end
 
@@ -669,14 +678,22 @@ module DatapathPipelinedCache (
   
   
   cycle_status_e d_cycle_status; 
+  logic [`REG_SIZE] d_pc_current ;
   always_comb begin
 	icache.RREADY = next_icache_RREADY; 
-	d_cycle_status = decode_state.cycle_status; 
+	d_cycle_status = (x_branchinTime || x_jumpinTime) ? CYCLE_TAKEN_BRANCH : decode_state.cycle_status; 
 	decode_insn = ( (icache.RREADY)? ( (icache.RVALID) ? icache.RDATA:`NOP ) : d_prev_insn );  //ensure instruction is valid before recieving it 
+	d_pc_current = (x_branchinTime || x_jumpinTime)? 32'b0: decode_pc;
 	if(stall_break_cache_read || stall_break_cache_write) begin
 		icache.RREADY = 1'b1;
+		if(xd_lw_dep_stall_prev || fence_stall_prev || xd_while_div_stall_prev) begin
+			icache.RREADY = 1'b0;
+			decode_insn = d_prev_insn;
+			d_cycle_status = d_cycle_status_prev ; 
+			d_pc_current = d_prev_pc_current;
+		end
 	end
-	if( (stall_break_cache_read || stall_break_cache_write) &&(x_prev_branchinTime || x_prev_jumpinTime)) begin
+	if( (stall_break_cache_read_no_dep || stall_break_cache_write) &&(x_prev_branchinTime || x_prev_jumpinTime)) begin
 		decode_insn = `NOP; //flush invalid instruction loaded in previous cycle
 		d_cycle_status = CYCLE_TAKEN_BRANCH; 
 	end
@@ -721,7 +738,7 @@ module DatapathPipelinedCache (
   wire [`REG_SIZE] decode_pc = (stall_break_cache_read || stall_break_cache_write) ? f_to_d_pc_prev: decode_state.pc;
   
   wire d_is_stall = (xd_lw_dep_stall || fence_stall || xd_while_div_stall || m_cache_miss_next || m_cache_miss_next_w) ;
-  wire [`REG_SIZE] d_pc_current = (x_branchinTime || x_jumpinTime)? 32'b0: decode_pc;
+  
   wire [`REG_SIZE] d_insn = ((x_branchinTime || x_jumpinTime) ? `NOP: decode_insn);
   
   wire [`OPCODE_SIZE] d_insn_opcode = decode_insn[6:0];
@@ -790,7 +807,7 @@ module DatapathPipelinedCache (
   wire wx_rs2_dep = (d_prev_insn[6:0] == OpcodeRegReg)||(d_prev_insn[6:0] == OpcodeBranch);
   
   wire wd_load_dep = ( ( wx_rs1_dep && (w_insn_rd == d_prev_insn[19:15]) ) )||( ( wx_rs2_dep && (w_insn_rd == d_prev_insn[24:20]) ) ); 
-  wire wd_lw_dep_stall = (|w_insn_rd )&&(w_insn_opcode == OpcodeLoad)&&wd_load_dep;
+  wire wd_lw_dep_stall = (~x_prev_branchinTime && ~x_prev_jumpinTime)&&(|w_insn_rd )&&(w_insn_opcode == OpcodeLoad)&&wd_load_dep;
   
   
   assign d_to_x_insn = (xd_lw_dep_stall || fence_stall || m_cache_miss_next || m_cache_miss_next_w) ? `NOP: d_insn; //insn propagated to X stage
@@ -841,6 +858,7 @@ module DatapathPipelinedCache (
         fence_stall_prev <= fence_stall; 
         xd_while_div_stall_prev <= xd_while_div_stall;
 		md_lw_dep_stall_prev <= md_lw_dep_stall; 
+		xd_lw_dep_stall_prev <= xd_lw_dep_stall; 
 	end
   end
   
@@ -1893,10 +1911,7 @@ module DatapathPipelinedCache (
 		if (m_is_load) begin
 		
 			if(m_insn_lw ) begin
-				if((m_exe_out[0] | m_exe_out[1])) begin
-					m_illegal_insn = 1'b1;
-				end
-				else if(!m_cache_miss_current)begin
+				if(!m_cache_miss_current)begin
 					m_reg_write_en = 0; 
 					m_to_w_insn = `NOP;
 				end
@@ -2035,7 +2050,7 @@ module DatapathPipelinedCache (
 			m_is_lbu_pending <=0; 
 			m_addr_offset_pending <=0;
 		end
-		else if(m_is_load && !m_illegal_insn) begin
+		else if(m_is_load) begin
 			m_to_w_insn_pending <= m_insn;
 			m_to_w_pc_pending <= m_pc;
 			m_is_lw_pending <= m_insn_lw;
@@ -2047,7 +2062,7 @@ module DatapathPipelinedCache (
 			
 			
 		end
-		else if(m_is_store && !m_illegal_insn) begin
+		else if(m_is_store) begin
 			m_to_w_insn_pending_w <= m_insn;
 			m_to_w_pc_pending_w <= m_pc;
 		end
@@ -2144,25 +2159,23 @@ module DatapathPipelinedCache (
 		dcache.WDATA = 0; 
 		
 		if (m_is_load) begin
-			dcache.ARADDR = (m_exe_out)&(32'hffff_fffc);
+			dcache.ARADDR = {m_exe_out[31:2],{2{1'b0}}};
 			dcache.ARVALID = 1'b1;
 			m_cache_miss_next = 1'b1;	
 	   end
 	   else if(m_is_store) begin
 			if(m_insn_sw) begin
-				if(~m_exe_out[0] & ~m_exe_out[1]) begin
-					dcache.AWADDR = m_exe_out;
-					dcache.AWVALID = 1'b1;
-					m_cache_miss_next_w = 1'b1;	
-					dcache.WVALID = 1'b1;
-					dcache.WSTRB = 4'hf;
-					dcache.WDATA =  m_rs2_data;
-				end
+				dcache.AWADDR = {m_exe_out[31:2],{2{1'b0}}};
+				dcache.AWVALID = 1'b1;
+				m_cache_miss_next_w = 1'b1;	
+				dcache.WVALID = 1'b1;
+				dcache.WSTRB = 4'hf;
+				dcache.WDATA =  m_rs2_data;
 				
 		   end
 		   else if(m_insn_sb) begin
 				dcache.AWVALID = 1'b1;
-				dcache.AWADDR = (m_exe_out)&(32'hffff_fffc);
+				dcache.AWADDR = {m_exe_out[31:2],{2{1'b0}}};
 				dcache.WVALID = 1'b1;
 				m_cache_miss_next_w = 1'b1;	
 				case (m_exe_out[1:0])
@@ -2186,7 +2199,7 @@ module DatapathPipelinedCache (
 		   end
 		   else if(m_insn_sh) begin
 				dcache.AWVALID = 1'b1;
-				dcache.AWADDR = (m_exe_out)&(32'hffff_fffc);
+				dcache.AWADDR = {m_exe_out[31:2],{2{1'b0}}};
 				dcache.WVALID = 1'b1;
 				m_cache_miss_next_w = 1'b1;	
 				case (m_exe_out[1:0])
