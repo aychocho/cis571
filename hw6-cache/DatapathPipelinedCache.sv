@@ -582,21 +582,39 @@ module DatapathPipelinedCache (
   // program counter
   logic next_icache_ARVALID ; // sets icache.ARVALID to 0 in the next cycle during stall 
   logic next_icache_RREADY; 
+  logic f_insn_sent; 
+  logic f_insn_pending;
   always_ff @(posedge clk) begin
     if (rst) begin
       next_f_pc_current <= 32'd0;
       // NB: use CYCLE_NO_STALL since this is the value that will persist after the last reset cycle
       f_cycle_status <= CYCLE_NO_STALL;
+	  f_insn_sent <=0; 
 	   next_icache_RREADY <= 1'b1;
+	   f_insn_pending <= 0; 
     end else begin
 	  f_cycle_status <= CYCLE_NO_STALL;
-      next_f_pc_current <= ((xd_lw_dep_stall || fence_stall || xd_while_div_stall || md_lw_dep_stall || w_cache_miss_next)? f_pc_current:x_pc_next);
+      next_f_pc_current <= ((xd_lw_dep_stall || fence_stall || xd_while_div_stall || md_lw_dep_stall || w_cache_miss_next || icache_miss)? f_pc_current:x_pc_next);
+	  if((x_branchinTime || x_jumpinTime) && icache_miss) begin
+		next_f_pc_current <= x_pc_next; 
+		next_icache_ARVALID <=1'b1;
+	  end
 	  next_icache_RREADY <= 1'b1;
+	  f_insn_sent <= icache.ARVALID; 
+	  if(f_insn_sent) begin
+		f_insn_sent <=1'b1;
+	  end
+	  if(f_insn_pending && icache.RVALID) begin
+		f_insn_pending <=1'b0;
+	  end
+	  if(icache.ARVALID) begin
+		f_insn_pending <=1'b1;
+	  end
     end
   end
   // set icache.ARVALID to 1 if we don't have stalls 
-
-  
+ 
+  logic icache_miss; 
   always_ff @(posedge clk) begin
     if ( ~(xd_lw_dep_stall|| fence_stall || xd_while_div_stall || md_lw_dep_stall || w_cache_miss_next)) begin //no stall so ready to send next PC to instruction memory
       next_icache_ARVALID <= 1'b1;
@@ -612,15 +630,18 @@ module DatapathPipelinedCache (
  
   
   assign icache.ARADDR = f_pc_current;
+  
   logic [`ADDR_WIDTH-1: 0] f_pc_prev;
+  logic insn_sent; 
   always_comb begin //update icache.ARVALID + bypass pc value when cache responds 
 	icache.ARVALID = next_icache_ARVALID;
 	f_pc_current = next_f_pc_current; 
 	if(rst) begin
 		icache.ARVALID = 0;
 		f_pc_current = 0; 
+		
 	end
-	if( (x_branchinTime || x_jumpinTime )) begin
+	if( (x_branchinTime || x_jumpinTime ||icache_miss)) begin
 		icache.ARVALID = 0; 
 	end
 	
@@ -653,7 +674,7 @@ module DatapathPipelinedCache (
         pc: 0,
         cycle_status: CYCLE_RESET
       };
-	end else if(xd_lw_dep_stall  || fence_stall || xd_while_div_stall || md_lw_dep_stall || w_cache_miss_next) begin //avoid fetch pushing next instruction when in stall 
+	end else if(xd_lw_dep_stall  || fence_stall || xd_while_div_stall || md_lw_dep_stall || w_cache_miss_next ) begin //avoid fetch pushing next instruction when in stall 
 		
 	   decode_state <= '{
           pc: d_pc_current,
@@ -662,8 +683,8 @@ module DatapathPipelinedCache (
 		
     end else begin
         decode_state <= '{
-          pc: f_to_d_pc,
-          cycle_status: ((x_branchinTime || x_jumpinTime)? CYCLE_TAKEN_BRANCH : f_cycle_status)
+          pc: ((icache_miss)? d_pc_current: f_to_d_pc),
+          cycle_status: ((x_branchinTime || x_jumpinTime)? CYCLE_TAKEN_BRANCH : ((icache_miss)? CYCLE_ICACHE_MISS:f_cycle_status) )
         };
     end
   end
@@ -675,12 +696,17 @@ module DatapathPipelinedCache (
   
   cycle_status_e d_cycle_status; 
   logic [`REG_SIZE] d_pc_current ;
+  
   always_comb begin
+	icache_miss = 1'b0; 
 	icache.RREADY = next_icache_RREADY; 
 	d_cycle_status = (x_branchinTime || x_jumpinTime) ? CYCLE_TAKEN_BRANCH : decode_state.cycle_status; 
 	decode_insn = ( (icache.RREADY)? ( (icache.RVALID) ? icache.RDATA:`NOP ) : d_prev_insn );  //ensure instruction is valid before recieving it 
-	if((x_branchinTime_prev || x_jumpinTime_prev)) begin
+	if((x_branchinTime_prev || x_jumpinTime_prev || x_jumpinFlush || x_branchinFlush)) begin
 		decode_insn = `NOP; 
+	end
+	if(!icache.RVALID && (f_insn_sent)) begin
+		icache_miss = 1'b1; 
 	end
 	d_pc_current = (x_branchinTime || x_jumpinTime)? 32'b0: decode_pc;
 	
@@ -1536,14 +1562,30 @@ module DatapathPipelinedCache (
   
   end
   logic x_branchinTime_prev, x_jumpinTime_prev; 
+  logic x_branchinFlush, x_jumpinFlush; 
   always_ff @(posedge clk) begin
 	  if(rst) begin
 			x_branchinTime_prev <= 0; 
 			x_jumpinTime_prev <= 0; 
+			x_branchinFlush <=0 ; 
+			x_jumpinFlush <= 0; 
+			
 	   end
 	   else begin
 			x_jumpinTime_prev <= x_jumpinTime; 
 			x_branchinTime_prev <= x_branchinTime;	
+			if(icache_miss && !x_branchinFlush) begin
+				x_branchinFlush <= x_branchinTime;
+			end
+			else if(!icache_miss)begin
+				x_branchinFlush <= x_branchinTime;
+			end
+			if(icache_miss && !x_jumpinFlush) begin
+				x_jumpinFlush <= x_jumpinTime;
+			end
+			else if (!icache_miss) begin
+				x_jumpinFlush <= x_jumpinTime;
+			end
 		end
    end
   
