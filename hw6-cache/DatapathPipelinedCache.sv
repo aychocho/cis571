@@ -705,7 +705,7 @@ module DatapathPipelinedCache (
 	if((x_branchinTime_prev || x_jumpinTime_prev || x_jumpinFlush || x_branchinFlush)) begin
 		decode_insn = `NOP; 
 	end
-	if(!icache.RVALID && (f_insn_sent)) begin
+	if(!icache.RVALID && (f_insn_pending)) begin
 		icache_miss = 1'b1; 
 	end
 	d_pc_current = (x_branchinTime || x_jumpinTime)? 32'b0: decode_pc;
@@ -2077,7 +2077,6 @@ AxilMemory #(.NUM_WORDS(8192)) memory (
   );
 
 endmodule
-
 
 
 
